@@ -15,8 +15,12 @@ jobs:
           ndk-version: r25b
           add-to-path: false
 
-      - name: Vendor nlohmann/json
-        run: bash scripts/fetch_deps.sh
+      - name: Vendor nlohmann_json
+        run: |
+          # 移除脚本里 Windows CRLF 的 \r 回车字符
+          sed -i 's/\r$//' scripts/fetch_deps.sh
+          bash scripts/fetch_deps.sh
+
 
       - name: Build with ndk-build (arm64-v8a)
         run: |
