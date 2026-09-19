@@ -2,6 +2,9 @@
 
 C++17 local HTTP API server built on [cpp-httplib](https://github.com/yhirose/cpp-httplib), targeting Android arm64-v8a via ndk-build.
 
+- **JSON**: parsed and generated with [nlohmann/json](https://github.com/nlohmann/json) (v3.11.3, single header, vendored at build time via `scripts/fetch_deps.sh`).
+- **Action dispatch**: table-driven — every action is registered in one `std::unordered_map` (`action_registry()` in `src/actions.cpp`), so routing is a single hash lookup with a unified registration entry.
+
 ## Project Structure
 
 ```
@@ -11,6 +14,7 @@ C++17 local HTTP API server built on [cpp-httplib](https://github.com/yhirose/cp
 │   └── Application.mk     # ndk-build app config (arm64-v8a)
 ├── src/
 │   ├── main.cpp           # Entry point
+│   ├── actions.cpp        # Unified action registry (unordered_map)
 │   ├── server.cpp         # Server implementation
 │   ├── router.cpp         # Route registration + SSE dispatch
 │   ├── sse.cpp            # SSE streaming helpers (send/done/event)
@@ -22,9 +26,12 @@ C++17 local HTTP API server built on [cpp-httplib](https://github.com/yhirose/cp
 │   └── server/
 │       ├── server.hpp     # Server wrapper class
 │       ├── router.hpp     # Route registration
-│       └── actions.hpp    # Action handlers + SSE helpers
+│       └── actions.hpp    # Action registry + handlers + SSE helpers
+├── scripts/
+│   └── fetch_deps.sh      # Vendors nlohmann/json at build time
 ├── third_party/
-│   └── httplib.h          # Header-only HTTP library
+│   ├── httplib.h          # Header-only HTTP library
+│   └── nlohmann/          # Filled by scripts/fetch_deps.sh
 ├── test_api.sh            # SSE streaming test suite
 └── README.md
 ```
@@ -34,6 +41,10 @@ C++17 local HTTP API server built on [cpp-httplib](https://github.com/yhirose/cp
 Prerequisites: [Android NDK](https://developer.android.com/ndk/downloads) (r21+).
 
 ```bash
+# 1. Vendor nlohmann/json (no-op if already present)
+./scripts/fetch_deps.sh
+
+# 2. Build
 export NDK_HOME=/path/to/android-ndk-rXX
 
 $NDK_HOME/ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=jni/Android.mk NDK_APPLICATION_MK=jni/Application.mk
@@ -83,6 +94,7 @@ Event order per action: start (`开始执行指令`) → step events → result 
 
 Invalid requests stay plain JSON:
 
+- non-JSON body → `400` + `{"error":"request body must be a JSON object"}`
 - missing `action` field → `400` + `{"error":"missing or invalid 'action' field"}`
 - unknown action → `400` + `{"error":"unknown action","action":"..."}`
 
@@ -120,13 +132,15 @@ namespace app {
 
 void handle_my_action(const std::string& body, httplib::DataSink& sink) {
     sse_send(sink, sse_event("开始执行指令"));
-    // ... do work, stream progress with sse_send(sink, R"({"step":...})") ...
-    sse_send(sink, R"({"result":{...},"status":"completed"})");
+    // ... do work, stream progress with sse_send(sink, ...):
+    sse_send(sink, json{{"step", "..."}, {"status", "ok"}}.dump());
+    sse_send(sink, json{{"result", json{{"ok", true}}}, {"status", "completed"}}.dump());
     sse_done(sink);   // must end with data: [DONE]
 }
 
 } // namespace app
 ```
 
-2. Declare it in `include/server/actions.hpp`, register it in `get_action_handler()` (`src/router.cpp`),
-   and add the file to `jni/Android.mk`.
+2. Declare it in `include/server/actions.hpp`, register it in the unified registry table
+   `action_registry()` (`src/actions.cpp`), and add the file to `jni/Android.mk`.
+   Dispatch needs no further changes — the router looks the handler up in the map.
