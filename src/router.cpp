@@ -2,9 +2,9 @@
 #include "server/actions.hpp"
 
 #include <httplib.h>
+#include <functional>
 #include <iostream>
 #include <string>
-#include <functional>
 
 namespace app {
 
@@ -32,10 +32,15 @@ ActionHandler get_action_handler(const std::string& action_name) {
 
 void register_routes(httplib::Server& svr) {
 
-    // ── Unified POST endpoint ─────────────────────────────────
+    // ── Unified POST endpoint (SSE streaming response) ─────────
     // Request:  POST /api/v1/execute
     // Body:     {"action": "<action_name>"}
-    // ─────────────────────────────────────────────────────────
+    // Response: text/event-stream
+    //   data: {"message":"开始执行指令"}
+    //   data: {"step":...}
+    //   data: {"result":...,"status":"completed"}
+    //   data: [DONE]
+    // ────────────────────────────────────────────────────────────
     svr.Post("/api/v1/execute", [](const httplib::Request& req, httplib::Response& res) {
         std::string action = extract_json_string(req.body, "action");
 
@@ -49,18 +54,30 @@ void register_routes(httplib::Server& svr) {
                   << " body=" << req.body << std::endl;
 
         ActionHandler handler = get_action_handler(action);
-        if (handler) {
-            handler(req.body, res);
-        } else {
+        if (!handler) {
             res.status = 400;
             res.set_content(R"({"error":"unknown action","action":")" + action + "\"}", "application/json");
+            return;
         }
+
+        res.status = 200;
+        res.set_header("Cache-Control", "no-cache");
+        res.set_header("X-Accel-Buffering", "no");
+        res.set_chunked_content_provider(
+            "text/event-stream",
+            [handler, body = req.body](size_t /*offset*/, httplib::DataSink& sink) {
+                handler(body, sink); // handler ends with data: [DONE] + sink.done()
+                return true;
+            });
     });
 
-    // ── 404 ───────────────────────────────────────────────────
+    // ── Error handler ─────────────────────────────────────────
+    // Only fills a body for unmatched routes; keeps the status set
+    // by route handlers (e.g. 400) untouched.
     svr.set_error_handler([](const httplib::Request&, httplib::Response& res) {
-        res.status = 404;
-        res.set_content(R"({"error":"not found"})", "application/json");
+        if (res.status == 404) {
+            res.set_content(R"({"error":"not found"})", "application/json");
+        }
     });
 }
 

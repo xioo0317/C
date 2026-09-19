@@ -10,6 +10,7 @@ LOCAL_SRC_FILES := \
     ../src/main.cpp \
     ../src/server.cpp \
     ../src/router.cpp \
+    ../src/sse.cpp \
     ../src/list_items.cpp \
     ../src/create_item.cpp \
     ../src/update_item.cpp \
