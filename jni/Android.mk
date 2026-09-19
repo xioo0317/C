@@ -8,6 +8,7 @@ LOCAL_MODULE := local_api
 # Source files
 LOCAL_SRC_FILES := \
     ../src/main.cpp \
+    ../src/actions.cpp \
     ../src/server.cpp \
     ../src/router.cpp \
     ../src/sse.cpp \

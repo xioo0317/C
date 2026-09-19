@@ -2,33 +2,13 @@
 #include "server/actions.hpp"
 
 #include <httplib.h>
-#include <functional>
+#include <nlohmann/json.hpp>
 #include <iostream>
 #include <string>
 
+using json = nlohmann::json;
+
 namespace app {
-
-// Simple JSON string field extractor
-static std::string extract_json_string(const std::string& json, const std::string& key) {
-    std::string search = "\"" + key + "\"";
-    auto pos = json.find(search);
-    if (pos == std::string::npos) return "";
-    pos = json.find(":", pos);
-    if (pos == std::string::npos) return "";
-    pos = json.find("\"", pos);
-    if (pos == std::string::npos) return "";
-    auto end = json.find("\"", pos + 1);
-    if (end == std::string::npos) return "";
-    return json.substr(pos + 1, end - pos - 1);
-}
-
-ActionHandler get_action_handler(const std::string& action_name) {
-    if (action_name == "list_items") return handle_list_items;
-    if (action_name == "create_item") return handle_create_item;
-    if (action_name == "update_item") return handle_update_item;
-    if (action_name == "delete_item") return handle_delete_item;
-    return nullptr;
-}
 
 void register_routes(httplib::Server& svr) {
 
@@ -42,21 +22,35 @@ void register_routes(httplib::Server& svr) {
     //   data: [DONE]
     // ────────────────────────────────────────────────────────────
     svr.Post("/api/v1/execute", [](const httplib::Request& req, httplib::Response& res) {
-        std::string action = extract_json_string(req.body, "action");
+        // Parse the request body with nlohmann/json (no exceptions).
+        const json payload = json::parse(req.body, /*cb=*/nullptr, /*allow_exceptions=*/false);
 
-        if (action.empty()) {
+        if (!payload.is_object()) {
             res.status = 400;
-            res.set_content(R"({"error":"missing or invalid 'action' field"})", "application/json");
+            res.set_content(json{{"error", "request body must be a JSON object"}}.dump(),
+                            "application/json");
             return;
         }
 
+        const auto action_field = payload.find("action");
+        if (action_field == payload.end() || !action_field->is_string()
+                || action_field->get<std::string>().empty()) {
+            res.status = 400;
+            res.set_content(json{{"error", "missing or invalid 'action' field"}}.dump(),
+                            "application/json");
+            return;
+        }
+
+        const std::string action = action_field->get<std::string>();
         std::cout << "[POST /api/v1/execute] action=" << action
                   << " body=" << req.body << std::endl;
 
-        ActionHandler handler = get_action_handler(action);
+        // Table-driven dispatch: one hash lookup, no if-else chain.
+        const ActionHandler handler = find_action(action);
         if (!handler) {
             res.status = 400;
-            res.set_content(R"({"error":"unknown action","action":")" + action + "\"}", "application/json");
+            res.set_content(json{{"error", "unknown action"}, {"action", action}}.dump(),
+                            "application/json");
             return;
         }
 
@@ -76,7 +70,7 @@ void register_routes(httplib::Server& svr) {
     // by route handlers (e.g. 400) untouched.
     svr.set_error_handler([](const httplib::Request&, httplib::Response& res) {
         if (res.status == 404) {
-            res.set_content(R"({"error":"not found"})", "application/json");
+            res.set_content(json{{"error", "not found"}}.dump(), "application/json");
         }
     });
 }
