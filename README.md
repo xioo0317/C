@@ -3,7 +3,7 @@
 C++17 local HTTP API server built on [cpp-httplib](https://github.com/yhirose/cpp-httplib), targeting Android arm64-v8a via ndk-build.
 
 - **JSON**: parsed and generated with [nlohmann/json](https://github.com/nlohmann/json) (v3.11.3, single header, vendored at build time via `scripts/fetch_deps.sh`).
-- **Two entry points**: `POST /out` for CRUD actions, `POST /in` for utility functions.
+- **Two entry points**: `POST /api/v1/out` for CRUD actions, `POST /api/v1/in` for utility functions.
 - **Table-driven dispatch**: both routes use `unordered_map` hash lookup, adding a new handler = adding one row.
 
 ## Project Structure
@@ -15,10 +15,10 @@ C++17 local HTTP API server built on [cpp-httplib](https://github.com/yhirose/cp
 │   └── Application.mk
 ├── src/
 │   ├── main.cpp           # Entry point
-│   ├── actions.cpp        # Action registry (for POST /out)
+│   ├── actions.cpp        # Action registry (for POST /api/v1/out)
 │   ├── server.cpp         # Server implementation
 │   ├── router.cpp         # Route registration + dispatch
-│   ├── handlers.cpp       # Utility registry + handlers (for POST /in)
+│   ├── handlers.cpp       # Utility registry + handlers (for POST /api/v1/in)
 │   ├── list_items.cpp     # Action: list_items
 │   ├── create_item.cpp    # Action: create_item
 │   ├── update_item.cpp    # Action: update_item
@@ -55,7 +55,7 @@ adb shell /data/local/tmp/local_api
 
 ## API
 
-### POST /out — Action dispatch (CRUD)
+### POST /api/v1/out — Action dispatch (CRUD)
 
 | Action         | Response                          |
 |----------------|-----------------------------------|
@@ -65,12 +65,12 @@ adb shell /data/local/tmp/local_api
 | delete_item    | `{"deleted": true}`               |
 
 ```bash
-curl -X POST http://localhost:8080/out \
+curl -X POST http://localhost:8080/api/v1/out \
      -H "Content-Type: application/json" \
      -d '{"action":"create_item"}'
 ```
 
-### POST /in — Utility dispatch
+### POST /api/v1/in — Utility dispatch
 
 | Command   | Response                                    |
 |-----------|---------------------------------------------|
@@ -80,7 +80,7 @@ curl -X POST http://localhost:8080/out \
 | time      | `{"timestamp":1234567890,"unit":"unix_seconds"}` |
 
 ```bash
-curl -X POST http://localhost:8080/in \
+curl -X POST http://localhost:8080/api/v1/in \
      -H "Content-Type: application/json" \
      -d '{"command":"ping"}'
 ```
@@ -100,14 +100,14 @@ curl -X POST http://localhost:8080/in \
 ./test_api.sh 192.168.1.100 8080
 ```
 
-## Adding New Actions (POST /out)
+## Adding New Actions (POST /api/v1/out)
 
 1. Create `src/my_action.cpp`
 2. Declare in `include/server/actions.hpp`
 3. Register in `action_registry()` in `src/actions.cpp`
 4. Add to `jni/Android.mk`
 
-## Adding New Utilities (POST /in)
+## Adding New Utilities (POST /api/v1/in)
 
 1. Implement handler in `src/handlers.cpp`
 2. Declare in `include/server/handlers.hpp`

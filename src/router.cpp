@@ -13,9 +13,9 @@ namespace app {
 
 void register_routes(httplib::Server& svr) {
 
-    // ── POST /out — action dispatch (CRUD) ──────────────────────
+    // ── POST /api/v1/out — action dispatch (CRUD) ───────────────
     // Body: {"action": "list_items" | "create_item" | ...}
-    svr.Post("/out", [](const httplib::Request& req, httplib::Response& res) {
+    svr.Post("/api/v1/out", [](const httplib::Request& req, httplib::Response& res) {
         const json payload = json::parse(req.body, nullptr, false);
 
         if (!payload.is_object()) {
@@ -35,7 +35,7 @@ void register_routes(httplib::Server& svr) {
         }
 
         const std::string action = action_field->get<std::string>();
-        std::cout << "[POST /out] action=" << action << std::endl;
+        std::cout << "[POST /api/v1/out] action=" << action << std::endl;
 
         const Handler handler = find_action(action);
         if (!handler) {
@@ -48,9 +48,9 @@ void register_routes(httplib::Server& svr) {
         handler(req, res);
     });
 
-    // ── POST /in — utility dispatch ─────────────────────────────
+    // ── POST /api/v1/in — utility dispatch ──────────────────────
     // Body: {"command": "ping" | "status" | "echo" | "time"}
-    svr.Post("/in", [](const httplib::Request& req, httplib::Response& res) {
+    svr.Post("/api/v1/in", [](const httplib::Request& req, httplib::Response& res) {
         const json payload = json::parse(req.body, nullptr, false);
 
         if (!payload.is_object()) {
@@ -70,7 +70,7 @@ void register_routes(httplib::Server& svr) {
         }
 
         const std::string command = cmd_field->get<std::string>();
-        std::cout << "[POST /in] command=" << command << std::endl;
+        std::cout << "[POST /api/v1/in] command=" << command << std::endl;
 
         const Handler handler = find_util(command);
         if (!handler) {

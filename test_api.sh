@@ -9,8 +9,8 @@ set -euo pipefail
 HOST="${1:-127.0.0.1}"
 PORT="${2:-8080}"
 BASE_URL="http://${HOST}:${PORT}"
-OUT_URL="${BASE_URL}/out"
-IN_URL="${BASE_URL}/in"
+OUT_URL="${BASE_URL}/api/v1/out"
+IN_URL="${BASE_URL}/api/v1/in"
 
 PASS=0
 FAIL=0
@@ -41,34 +41,34 @@ echo "  Target: ${BASE_URL}"
 echo "==================================================="
 echo ""
 
-# ── POST /out — action dispatch ─────────────────────────────
-echo "[1/8] POST /out — list_items"
+# ── POST /api/v1/out — action dispatch ──────────────────────
+echo "[1/8] POST /api/v1/out — list_items"
 post_json "$OUT_URL" '{"action":"list_items"}'
 check "HTTP 200" "$([ "${HTTP_CODE}" = "200" ] && echo 1 || echo 0)" "got ${HTTP_CODE}"
 check "contains items" "$(echo "$BODY" | grep -q '\"items\"' && echo 1 || echo 0)"
 
-echo "[2/8] POST /out — create_item"
+echo "[2/8] POST /api/v1/out — create_item"
 post_json "$OUT_URL" '{"action":"create_item"}'
 check "HTTP 200" "$([ "${HTTP_CODE}" = "200" ] && echo 1 || echo 0)" "got ${HTTP_CODE}"
 check "contains created:true" "$(echo "$BODY" | grep -q '\"created\":true' && echo 1 || echo 0)"
 
-echo "[3/8] POST /out — update_item"
+echo "[3/8] POST /api/v1/out — update_item"
 post_json "$OUT_URL" '{"action":"update_item"}'
 check "HTTP 200" "$([ "${HTTP_CODE}" = "200" ] && echo 1 || echo 0)" "got ${HTTP_CODE}"
 check "contains updated:true" "$(echo "$BODY" | grep -q '\"updated\":true' && echo 1 || echo 0)"
 
-echo "[4/8] POST /out — delete_item"
+echo "[4/8] POST /api/v1/out — delete_item"
 post_json "$OUT_URL" '{"action":"delete_item"}'
 check "HTTP 200" "$([ "${HTTP_CODE}" = "200" ] && echo 1 || echo 0)" "got ${HTTP_CODE}"
 check "contains deleted:true" "$(echo "$BODY" | grep -q '\"deleted\":true' && echo 1 || echo 0)"
 
-# ── POST /in — utility dispatch ─────────────────────────────
-echo "[5/8] POST /in — ping"
+# ── POST /api/v1/in — utility dispatch ──────────────────────
+echo "[5/8] POST /api/v1/in — ping"
 post_json "$IN_URL" '{"command":"ping"}'
 check "HTTP 200" "$([ "${HTTP_CODE}" = "200" ] && echo 1 || echo 0)" "got ${HTTP_CODE}"
 check "contains pong" "$(echo "$BODY" | grep -q '\"pong\"' && echo 1 || echo 0)"
 
-echo "[6/8] POST /in — time"
+echo "[6/8] POST /api/v1/in — time"
 post_json "$IN_URL" '{"command":"time"}'
 check "HTTP 200" "$([ "${HTTP_CODE}" = "200" ] && echo 1 || echo 0)" "got ${HTTP_CODE}"
 check "contains timestamp" "$(echo "$BODY" | grep -q '\"timestamp\"' && echo 1 || echo 0)"
