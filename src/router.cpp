@@ -1,5 +1,6 @@
 #include "server/router.hpp"
 #include "server/actions.hpp"
+#include "server/handlers.hpp"
 
 #include <httplib.h>
 #include <nlohmann/json.hpp>
@@ -12,18 +13,9 @@ namespace app {
 
 void register_routes(httplib::Server& svr) {
 
-    // ── Unified POST endpoint (SSE streaming response) ─────────
-    // Request:  POST /api/v1/execute
-    // Body:     {"action": "<action_name>"}
-    // Response: text/event-stream
-    //   data: {"message":"开始执行指令"}
-    //   data: {"step":...}
-    //   data: {"result":...,"status":"completed"}
-    //   data: [DONE]
-    // ────────────────────────────────────────────────────────────
+    // ── Unified POST endpoint (plain JSON response) ─────────────
     svr.Post("/api/v1/execute", [](const httplib::Request& req, httplib::Response& res) {
-        // Parse the request body with nlohmann/json (no exceptions).
-        const json payload = json::parse(req.body, /*cb=*/nullptr, /*allow_exceptions=*/false);
+        const json payload = json::parse(req.body, nullptr, false);
 
         if (!payload.is_object()) {
             res.status = 400;
@@ -45,7 +37,6 @@ void register_routes(httplib::Server& svr) {
         std::cout << "[POST /api/v1/execute] action=" << action
                   << " body=" << req.body << std::endl;
 
-        // Table-driven dispatch: one hash lookup, no if-else chain.
         const ActionHandler handler = find_action(action);
         if (!handler) {
             res.status = 400;
@@ -54,20 +45,16 @@ void register_routes(httplib::Server& svr) {
             return;
         }
 
-        res.status = 200;
-        res.set_header("Cache-Control", "no-cache");
-        res.set_header("X-Accel-Buffering", "no");
-        res.set_chunked_content_provider(
-            "text/event-stream",
-            [handler, body = req.body](size_t /*offset*/, httplib::DataSink& sink) {
-                handler(body, sink); // handler ends with data: [DONE] + sink.done()
-                return true;
-            });
+        handler(req, res);
     });
 
-    // ── Error handler ─────────────────────────────────────────
-    // Only fills a body for unmatched routes; keeps the status set
-    // by route handlers (e.g. 400) untouched.
+    // ── Utility endpoints (src/handlers.cpp) ────────────────────
+    svr.Get("/api/v1/ping",   handle_ping);
+    svr.Get("/api/v1/status", handle_status);
+    svr.Post("/api/v1/echo",  handle_echo);
+    svr.Get("/api/v1/time",   handle_time);
+
+    // ── Error handler ───────────────────────────────────────────
     svr.set_error_handler([](const httplib::Request&, httplib::Response& res) {
         if (res.status == 404) {
             res.set_content(json{{"error", "not found"}}.dump(), "application/json");

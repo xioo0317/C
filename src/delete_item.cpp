@@ -8,29 +8,21 @@ namespace app {
 
 using nlohmann::json;
 
-void handle_delete_item(const std::string& body, httplib::DataSink& sink) {
+void handle_delete_item(const httplib::Request& req, httplib::Response& res) {
     std::cout << "[action] delete_item" << std::endl;
 
-    // Parse the request payload with nlohmann/json (validated upstream).
-    const json payload = json::parse(body, /*cb=*/nullptr, /*allow_exceptions=*/false);
+    const json payload = json::parse(req.body, nullptr, false);
     const std::string payload_str = payload.is_object() ? payload.dump() : "{}";
 
-    // 1. Stream the start event
-    sse_send(sink, sse_event("开始执行指令"));
-
-    // 2. Write test log to verify API execution
     std::ofstream log_file("/data/adb/local_api/123", std::ios::app);
     if (log_file.is_open()) {
         log_file << "[delete_item] executed successfully, payload=" << payload_str << std::endl;
-        sse_send(sink, json{{"step", "write_log"}, {"status", "ok"}}.dump());
     } else {
         std::cerr << "[delete_item] failed to open log file" << std::endl;
-        sse_send(sink, json{{"step", "write_log"}, {"status", "skipped"}}.dump());
     }
 
-    // 3. Stream the result, then [DONE]
-    sse_send(sink, json{{"result", json{{"deleted", true}}}, {"status", "completed"}}.dump());
-    sse_done(sink);
+    res.status = 200;
+    res.set_content(json{{"deleted", true}}.dump(), "application/json");
 }
 
 } // namespace app

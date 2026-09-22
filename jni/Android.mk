@@ -11,7 +11,7 @@ LOCAL_SRC_FILES := \
     ../src/actions.cpp \
     ../src/server.cpp \
     ../src/router.cpp \
-    ../src/sse.cpp \
+    ../src/handlers.cpp \
     ../src/list_items.cpp \
     ../src/create_item.cpp \
     ../src/update_item.cpp \

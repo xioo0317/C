@@ -3,8 +3,6 @@
 namespace app {
 
 // ── 统一动作注册入口（表驱动）──────────────────────────────────────
-// All streaming actions are registered in a single unordered_map.
-// Dispatch is one hash lookup; adding an action = adding one row here.
 const std::unordered_map<std::string, ActionHandler>& action_registry() {
     static const std::unordered_map<std::string, ActionHandler> registry = {
         {"list_items",   &handle_list_items},
