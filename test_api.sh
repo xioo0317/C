@@ -9,7 +9,8 @@ set -euo pipefail
 HOST="${1:-127.0.0.1}"
 PORT="${2:-8080}"
 BASE_URL="http://${HOST}:${PORT}"
-EXEC_URL="${BASE_URL}/api/v1/execute"
+OUT_URL="${BASE_URL}/out"
+IN_URL="${BASE_URL}/in"
 
 PASS=0
 FAIL=0
@@ -26,11 +27,6 @@ check() {
     fi
 }
 
-get_json() {
-    HTTP_CODE=$(curl -s -o /tmp/api_body -w "%{http_code}" "$1")
-    BODY=$(cat /tmp/api_body)
-}
-
 post_json() {
     HTTP_CODE=$(curl -s -o /tmp/api_body -w "%{http_code}" \
         -X POST "$1" \
@@ -45,45 +41,48 @@ echo "  Target: ${BASE_URL}"
 echo "==================================================="
 echo ""
 
-echo "[1/8] list_items"
-post_json "$EXEC_URL" '{"action":"list_items"}'
+# ── POST /out — action dispatch ─────────────────────────────
+echo "[1/8] POST /out — list_items"
+post_json "$OUT_URL" '{"action":"list_items"}'
 check "HTTP 200" "$([ "${HTTP_CODE}" = "200" ] && echo 1 || echo 0)" "got ${HTTP_CODE}"
 check "contains items" "$(echo "$BODY" | grep -q '\"items\"' && echo 1 || echo 0)"
 
-echo "[2/8] create_item"
-post_json "$EXEC_URL" '{"action":"create_item"}'
+echo "[2/8] POST /out — create_item"
+post_json "$OUT_URL" '{"action":"create_item"}'
 check "HTTP 200" "$([ "${HTTP_CODE}" = "200" ] && echo 1 || echo 0)" "got ${HTTP_CODE}"
 check "contains created:true" "$(echo "$BODY" | grep -q '\"created\":true' && echo 1 || echo 0)"
 
-echo "[3/8] update_item"
-post_json "$EXEC_URL" '{"action":"update_item"}'
+echo "[3/8] POST /out — update_item"
+post_json "$OUT_URL" '{"action":"update_item"}'
 check "HTTP 200" "$([ "${HTTP_CODE}" = "200" ] && echo 1 || echo 0)" "got ${HTTP_CODE}"
 check "contains updated:true" "$(echo "$BODY" | grep -q '\"updated\":true' && echo 1 || echo 0)"
 
-echo "[4/8] delete_item"
-post_json "$EXEC_URL" '{"action":"delete_item"}'
+echo "[4/8] POST /out — delete_item"
+post_json "$OUT_URL" '{"action":"delete_item"}'
 check "HTTP 200" "$([ "${HTTP_CODE}" = "200" ] && echo 1 || echo 0)" "got ${HTTP_CODE}"
 check "contains deleted:true" "$(echo "$BODY" | grep -q '\"deleted\":true' && echo 1 || echo 0)"
 
-echo "[5/8] Error: missing action"
-post_json "$EXEC_URL" '{}'
-check "HTTP 400" "$([ "${HTTP_CODE}" = "400" ] && echo 1 || echo 0)" "got ${HTTP_CODE}"
-check "contains error" "$(echo "$BODY" | grep -q '\"error\"' && echo 1 || echo 0)"
-
-echo "[6/8] Error: unknown action"
-post_json "$EXEC_URL" '{"action":"foobar"}'
-check "HTTP 400" "$([ "${HTTP_CODE}" = "400" ] && echo 1 || echo 0)" "got ${HTTP_CODE}"
-check "contains error" "$(echo "$BODY" | grep -q '\"error\"' && echo 1 || echo 0)"
-
-echo "[7/8] GET /api/v1/ping"
-get_json "${BASE_URL}/api/v1/ping"
+# ── POST /in — utility dispatch ─────────────────────────────
+echo "[5/8] POST /in — ping"
+post_json "$IN_URL" '{"command":"ping"}'
 check "HTTP 200" "$([ "${HTTP_CODE}" = "200" ] && echo 1 || echo 0)" "got ${HTTP_CODE}"
 check "contains pong" "$(echo "$BODY" | grep -q '\"pong\"' && echo 1 || echo 0)"
 
-echo "[8/8] GET /api/v1/time"
-get_json "${BASE_URL}/api/v1/time"
+echo "[6/8] POST /in — time"
+post_json "$IN_URL" '{"command":"time"}'
 check "HTTP 200" "$([ "${HTTP_CODE}" = "200" ] && echo 1 || echo 0)" "got ${HTTP_CODE}"
 check "contains timestamp" "$(echo "$BODY" | grep -q '\"timestamp\"' && echo 1 || echo 0)"
+
+# ── Error paths ─────────────────────────────────────────────
+echo "[7/8] Error: unknown action"
+post_json "$OUT_URL" '{"action":"foobar"}'
+check "HTTP 400" "$([ "${HTTP_CODE}" = "400" ] && echo 1 || echo 0)" "got ${HTTP_CODE}"
+check "contains error" "$(echo "$BODY" | grep -q '\"error\"' && echo 1 || echo 0)"
+
+echo "[8/8] Error: missing command"
+post_json "$IN_URL" '{}'
+check "HTTP 400" "$([ "${HTTP_CODE}" = "400" ] && echo 1 || echo 0)" "got ${HTTP_CODE}"
+check "contains error" "$(echo "$BODY" | grep -q '\"error\"' && echo 1 || echo 0)"
 
 echo ""
 echo "==================================================="

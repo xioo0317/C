@@ -13,8 +13,9 @@ namespace app {
 
 void register_routes(httplib::Server& svr) {
 
-    // ── Unified POST endpoint (plain JSON response) ─────────────
-    svr.Post("/api/v1/execute", [](const httplib::Request& req, httplib::Response& res) {
+    // ── POST /out — action dispatch (CRUD) ──────────────────────
+    // Body: {"action": "list_items" | "create_item" | ...}
+    svr.Post("/out", [](const httplib::Request& req, httplib::Response& res) {
         const json payload = json::parse(req.body, nullptr, false);
 
         if (!payload.is_object()) {
@@ -34,10 +35,9 @@ void register_routes(httplib::Server& svr) {
         }
 
         const std::string action = action_field->get<std::string>();
-        std::cout << "[POST /api/v1/execute] action=" << action
-                  << " body=" << req.body << std::endl;
+        std::cout << "[POST /out] action=" << action << std::endl;
 
-        const ActionHandler handler = find_action(action);
+        const Handler handler = find_action(action);
         if (!handler) {
             res.status = 400;
             res.set_content(json{{"error", "unknown action"}, {"action", action}}.dump(),
@@ -48,11 +48,40 @@ void register_routes(httplib::Server& svr) {
         handler(req, res);
     });
 
-    // ── Utility endpoints (src/handlers.cpp) ────────────────────
-    svr.Get("/api/v1/ping",   handle_ping);
-    svr.Get("/api/v1/status", handle_status);
-    svr.Post("/api/v1/echo",  handle_echo);
-    svr.Get("/api/v1/time",   handle_time);
+    // ── POST /in — utility dispatch ─────────────────────────────
+    // Body: {"command": "ping" | "status" | "echo" | "time"}
+    svr.Post("/in", [](const httplib::Request& req, httplib::Response& res) {
+        const json payload = json::parse(req.body, nullptr, false);
+
+        if (!payload.is_object()) {
+            res.status = 400;
+            res.set_content(json{{"error", "request body must be a JSON object"}}.dump(),
+                            "application/json");
+            return;
+        }
+
+        const auto cmd_field = payload.find("command");
+        if (cmd_field == payload.end() || !cmd_field->is_string()
+                || cmd_field->get<std::string>().empty()) {
+            res.status = 400;
+            res.set_content(json{{"error", "missing or invalid 'command' field"}}.dump(),
+                            "application/json");
+            return;
+        }
+
+        const std::string command = cmd_field->get<std::string>();
+        std::cout << "[POST /in] command=" << command << std::endl;
+
+        const Handler handler = find_util(command);
+        if (!handler) {
+            res.status = 400;
+            res.set_content(json{{"error", "unknown command"}, {"command", command}}.dump(),
+                            "application/json");
+            return;
+        }
+
+        handler(req, res);
+    });
 
     // ── Error handler ───────────────────────────────────────────
     svr.set_error_handler([](const httplib::Request&, httplib::Response& res) {

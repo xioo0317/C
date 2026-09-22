@@ -7,13 +7,16 @@
 
 namespace app {
 
-// ── Action handler type ──────────────────────────────────────────────
-// Plain JSON handler: receives the request, writes response directly.
-using ActionHandler = std::function<void(const httplib::Request& req, httplib::Response& res)>;
+// ── Handler type ─────────────────────────────────────────────────────
+using Handler = std::function<void(const httplib::Request& req, httplib::Response& res)>;
 
-// ── Table-driven action registry (src/actions.cpp) ──────────────────
-const std::unordered_map<std::string, ActionHandler>& action_registry();
-ActionHandler find_action(const std::string& action_name);
+// ── Action registry (src/actions.cpp) ────────────────────────────────
+const std::unordered_map<std::string, Handler>& action_registry();
+Handler find_action(const std::string& name);
+
+// ── Utility registry (src/handlers.cpp) ──────────────────────────────
+const std::unordered_map<std::string, Handler>& util_registry();
+Handler find_util(const std::string& name);
 
 // ── CRUD action handlers (each in its own .cpp file) ────────────────
 void handle_list_items(const httplib::Request& req, httplib::Response& res);
