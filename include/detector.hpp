@@ -2,10 +2,11 @@
 //
 // detector.hpp — Manager-level kernel root detector.
 //
-// Only checks if each root manager is present via handshake.
+// Handshake-based detection for KernelSU, APatch, Magisk, SusFS.
 // For KernelSU, also reports the mode (e.g. "lkm-bundled").
 //
-// handle_detect() is the main entry point called from the HTTP layer.
+// This is a pure detection library — call run_all() to get results.
+// The HTTP layer calls this from tools.cpp (detect tool).
 
 #pragma once
 
@@ -53,12 +54,6 @@ struct DetectResult {
     MagiskResult magisk;
     SusfsResult susfs;
 };
-
-// --- Entry point for HTTP layer ---
-
-// Run full detection, write JSON result to file.
-// Returns HTTP response JSON string.
-std::string handle_detect();
 
 // Serialize a DetectResult to a pretty-printed JSON string.
 std::string result_to_json_string(const DetectResult& r);
