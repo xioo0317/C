@@ -5,27 +5,22 @@ include $(CLEAR_VARS)
 
 LOCAL_MODULE := local_api
 
-# Source files
+# Only two translation units:
+#   main.cpp     — HTTP network interface + routes
+#   detector.cpp — KernelSU / APatch / Magisk / SusFS detection + JSON
 LOCAL_SRC_FILES := \
     ../src/main.cpp \
-    ../src/actions.cpp \
-    ../src/server.cpp \
-    ../src/router.cpp \
-    ../src/handlers.cpp \
-    ../src/list_items.cpp \
-    ../src/create_item.cpp \
-    ../src/update_item.cpp \
-    ../src/delete_item.cpp
+    ../src/detector.cpp
 
-# Include directories
+# include/  holds the UAPI headers + detector.hpp;
+# third_party/ holds httplib.h and nlohmann/json.hpp (so that
+# "#include <nlohmann/json.hpp>" resolves).
 LOCAL_C_INCLUDES := \
     $(LOCAL_PATH)/../include \
     $(LOCAL_PATH)/../third_party
 
-# C++17 standard
-LOCAL_CPPFLAGS := -std=c++17 -frtti -fexceptions
+LOCAL_CPPFLAGS := -std=c++17 -frtti -fexceptions -Wall -Wextra
 
-# Link libraries
 LOCAL_LDLIBS := -llog -pthread
 
 include $(BUILD_EXECUTABLE)

@@ -48,11 +48,12 @@ SRC_DIR  := src
 BUILD    := build
 TARGET_NAME := local_api
 
-SRCS     := $(SRC_DIR)/main.cpp
+SRCS     := $(SRC_DIR)/main.cpp $(SRC_DIR)/detector.cpp
 
 ABIS     := arm64-v8a armeabi-v7a x86_64
 
 CXXFLAGS := -std=c++17 -Wall -Wextra -O2 -frtti -fexceptions $(INCLUDES)
+HOST_LDFLAGS := -pthread
 LDFLAGS  := -llog -pthread
 
 .PHONY: all ndk all-abis clean check-ndk
@@ -60,7 +61,7 @@ LDFLAGS  := -llog -pthread
 # Default: host build
 all:
 	@mkdir -p $(BUILD)
-	$(CXX) $(CXXFLAGS) -o $(BUILD)/$(TARGET_NAME) $(SRCS) $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) -o $(BUILD)/$(TARGET_NAME) $(SRCS) $(HOST_LDFLAGS)
 
 # Android NDK cross-compile
 ndk: check-ndk

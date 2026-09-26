@@ -1,54 +1,61 @@
 # Local API
 
-C++17 本地 HTTP API 服务器，集成了 [ksu-detect](https://github.com/xioo0317/ksu-detect) 的 Root 检测能力。基于 [cpp-httplib](https://github.com/yhirose/cpp-httplib) 构建。
+C++17 本地 HTTP 服务，集成 [ksu-detect](https://github.com/xioo0317/ksu-detect) 的 Root 检测能力（KernelSU / APatch / Magisk / SusFS），基于 [cpp-httplib](https://github.com/yhirose/cpp-httplib) 构建。
 
 ## 功能概述
 
-- **单文件架构**：所有逻辑（HTTP 服务器 + Root 检测）集中在 `src/main.cpp` 一个文件中
-- **单路由**：`POST /api/v1/detect` — 一键检测 KernelSU / APatch / Magisk
-- **JSON 输出**：使用 [nlohmann/json](https://github.com/nlohmann/json) 序列化检测结果，方便脚本解析当前设备使用的是哪个面具
-- **双构建模式**：支持主机直接编译（g++）和 Android NDK 交叉编译
+- **网卡与检测分离**：`src/main.cpp` 只负责启动 HTTP 网卡；所有检测逻辑在 `src/detector.cpp`
+- **单路由**：`POST /api/v1/detect` — 一键检测 KernelSU / APatch / Magisk / SusFS
+- **落盘而非打印**：服务全程不向终端输出任何内容；检测结果以 JSON 写入 `/data/local/tmp/coverRoot/root_detect.json`，供其它程序读取
+- **真实握手协议**：复刻各官方管理器的内核握手，而非简单文件探测；SusFS 无兜底（接口不应答就是没有）
+- **双构建模式**：支持主机 g++ 编译与 Android NDK（ndk-build）交叉编译
 
 ## 项目结构
 
 ```
 ./
-├── Makefile              # 构建脚本（主机 + NDK）
+├── Makefile                     # 主机 + NDK 构建脚本
 ├── src/
-│   └── main.cpp          # 全部代码：HTTP 服务器 + ksu-detect 检测逻辑
+│   ├── main.cpp                 # 仅启动 HTTP 网卡 + 路由，写结果文件
+│   └── detector.cpp             # 全部检测逻辑 + JSON 序列化
 ├── include/
-│   ├── detector.hpp      # （已合并到 main.cpp，保留供参考）
-│   ├── ksu_uapi.hpp      # KernelSU 用户态 API 定义
-│   ├── apatch_uapi.hpp   # APatch / KernelPatch supercall 定义
-│   └── magisk_uapi.hpp   # Magisk daemon 协议定义
-├── include/server/       # 旧的头文件（已弃用，可删除）
+│   ├── detector.hpp             # DetectResult / Detector 声明
+│   ├── ksu_uapi.hpp             # KernelSU 用户态 API
+│   ├── apatch_uapi.hpp          # APatch / KernelPatch supercall
+│   ├── magisk_uapi.hpp          # Magisk daemon 协议
+│   └── susfs_uapi.hpp           # SusFS 内核握手 ABI
 ├── third_party/
-│   ├── httplib.h         # cpp-httplib 单头文件 HTTP 库
-│   └── json.hpp          # nlohmann/json 单头文件 JSON 库
-├── jni/                  # 旧的 NDK 构建配置（已弃用）
-├── test_api.sh           # API 测试脚本
+│   ├── httplib.h                # cpp-httplib 单头库
+│   └── nlohmann/json.hpp        # nlohmann/json 单头库
+├── jni/
+│   ├── Android.mk               # ndk-build 脚本（只编译 main + detector）
+│   └── Application.mk           # arm64-v8a / c++_static / android-24
+├── test_api.sh                  # API 测试脚本
 └── README.md
 ```
 
 ## 构建
 
-### 主机编译（Linux / 桌面测试）
+### 主机编译（Linux 桌面测试）
 
 ```bash
 make
 # 产出: build/local_api
 ```
 
-### Android NDK 交叉编译
+### Android NDK（ndk-build，与 CI 一致）
+
+```bash
+$NDK/ndk-build NDK_PROJECT_PATH=. \
+  APP_BUILD_SCRIPT=jni/Android.mk \
+  NDK_APPLICATION_MK=jni/Application.mk
+# 产出: libs/arm64-v8a/local_api
+```
+
+也可以用 Makefile 交叉编译：
 
 ```bash
 make ndk NDK_HOME=/path/to/android-ndk-rXX
-# 默认 arm64-v8a
-
-make ndk NDK_HOME=/path/to/android-ndk-rXX ABI=armeabi-v7a
-
-make all-abis NDK_HOME=/path/to/android-ndk-rXX
-# 编译全部架构
 ```
 
 ### 清理
@@ -60,43 +67,34 @@ make clean
 ## 运行
 
 ```bash
-# 主机
-./build/local_api
-
 # Android
-adb push build/local_api_arm64-v8a /data/local/tmp/local_api
+adb push libs/arm64-v8a/local_api /data/local/tmp/local_api
 adb shell chmod +x /data/local/tmp/local_api
 adb shell /data/local/tmp/local_api
 ```
 
-服务默认监听 `0.0.0.0:8080`。
+服务默认监听 `0.0.0.0:8080`，启动后静默运行。
 
 ## API
 
-### POST /api/v1/detect — Root 检测
+### POST /api/v1/detect — 执行 Root 检测
 
-**请求体**（可选）：
+无需请求体。服务运行完整检测，把结果写入 `/data/local/tmp/coverRoot/root_detect.json`，HTTP 仅返回状态：
 
 ```json
 {
-  "superkey": "你的APatch超级密钥"
+  "status": "ok",
+  "result_file": "/data/local/tmp/coverRoot/root_detect.json"
 }
 ```
 
-也可以通过环境变量传入：`AP_SUPERKEY=<key>`
-
-**响应示例**：
+### 结果文件示例（root_detect.json）
 
 ```json
 {
   "detected": "magisk",
-  "kernelsu": {
-    "present": false
-  },
-  "apatch": {
-    "present": false,
-    "priv_level": "none"
-  },
+  "kernelsu": { "present": false },
+  "apatch": { "present": false },
   "magisk": {
     "present": true,
     "priv_level": "daemon_only",
@@ -113,16 +111,16 @@ adb shell /data/local/tmp/local_api
     "su_binary_detected": true,
     "su_binary_path": "/system/bin/su"
   },
-  "variants": {
-    "susfs_detected": false,
-    "susfs_source": ""
+  "susfs": {
+    "present": true,
+    "version": "v1.5.9",
+    "abi": "prctl",
+    "detail": "prctl handshake (susfs v1 ABI)",
+    "paired_with": "magisk"
   },
   "jailbreak": {
     "detected": true,
-    "indicators": [
-      "ro.debuggable=1",
-      "build_tags=test-keys"
-    ]
+    "indicators": ["ro.debuggable=1", "build_tags=test-keys"]
   }
 }
 ```
@@ -131,31 +129,28 @@ adb shell /data/local/tmp/local_api
 
 | 字段 | 说明 |
 |------|------|
-| `detected` | 检测到的 Root 方案：`none` / `kernelsu` / `kernelpatch` / `magisk` / `mixed` |
+| `detected` | Root 方案：`none` / `kernelsu` / `kernelpatch` / `magisk` / `mixed` |
 | `kernelsu.present` | KernelSU 是否正在运行 |
 | `apatch.present` | APatch 是否正在运行 |
 | `magisk.present` | Magisk 守护进程是否正在运行 |
-| `magisk.is_kitsune` | 是否为 Kitsune（Delta 版）Magisk |
-| `magisk.is_alpha` | 是否为 Magisk Alpha 版 |
+| `magisk.is_kitsune` | 是否为 Kitsune（Delta）Magisk |
+| `magisk.is_alpha` | 是否为 Magisk Alpha |
 | `magisk.has_zygisk` | Zygisk 是否启用 |
-| `magisk.has_shamiko` | Shamiko 模块是否安装 |
-| `magisk.has_susfs` | SusFS 是否检测到 |
-| `variants.susfs_detected` | 全局 SusFS 检测 |
+| `susfs.present` | SusFS 内核接口是否握手成功 |
+| `susfs.version` | 内核回报的精确版本 |
+| `susfs.abi` | 应答的 ABI：`reboot_v2`（v2.0.0+）/ `prctl`（v1.5.3–v1.5.12） |
 
-### 脚本解析示例
+### 脚本读取示例
 
 ```bash
-# 检测当前设备使用的 Root 方案
-curl -s -X POST http://localhost:8080/api/v1/detect | jq -r '.detected'
+# 触发检测
+curl -s -X POST http://localhost:8080/api/v1/detect
 
-# 检查是否为 Magisk
-curl -s -X POST http://localhost:8080/api/v1/detect | jq '.magisk.present'
+# 从落盘文件读取当前 Root 方案
+jq -r '.detected' /data/local/tmp/coverRoot/root_detect.json
 
-# 获取 Magisk 版本
-curl -s -X POST http://localhost:8080/api/v1/detect | jq -r '.magisk.version_str'
-
-# 检查是否为 Kitsune/Delta
-curl -s -X POST http://localhost:8080/api/v1/detect | jq '.magisk.is_kitsune'
+# 读取 SusFS 版本
+jq -r '.susfs.version' /data/local/tmp/coverRoot/root_detect.json
 ```
 
 ## 测试
@@ -167,11 +162,11 @@ curl -s -X POST http://localhost:8080/api/v1/detect | jq '.magisk.is_kitsune'
 
 ## 技术说明
 
-- **KernelSU 检测**：通过 reboot syscall hook 获取驱动 fd，调用 IOCTL_GET_INFO 获取详细信息，支持 legacy prctl 回退
-- **APatch 检测**：通过 supercall (syscall #45) 进行 hello 探测，支持超级密钥和 su 列表两种认证路径
-- **Magisk 检测**：通过 Unix domain socket 与 magiskd 守护进程握手，支持 Magisk 31.x 的文件系统 socket 路径
-- **SusFS 检测**：检查 /proc/sys/kernel/susfs_* 和 /sys/module/susfs
-- **Jailbreak 指标**：ro.debuggable、verified boot state、SELinux 状态、Xposed 框架等
+- **KernelSU 检测**：reboot syscall hook（`0xDEADBEEF / 0xCAFEBABE`）取得驱动 fd，ioctl `GET_INFO` / `GET_MANAGER_APPID`，legacy prctl 回退
+- **APatch 检测**：经 supercall（syscall #45，伪装 truncate）用固定 key `su` 发 `SUPERCALL_HELLO`，回报 `0x11581158` 即存在；无需超级密钥
+- **Magisk 检测**：Unix domain socket 与 magiskd 握手，支持 `/debug_ramdisk/.magisk/device/socket` 等文件系统 socket 路径
+- **SusFS 检测**：两阶段握手——reboot（第二魔术 `0xFAFAFAFA`，`SHOW_VERSION`）识别 v2.0.0+，prctl（`0xDEADBEEF`）识别 v1.5.3–v1.5.12；任一阶段成功才确认，**无兜底**
+- **Jailbreak 指标**：ro.debuggable、verified boot state、SELinux、Xposed 等
 
 ## 许可证
 

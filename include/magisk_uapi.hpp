@@ -2,9 +2,37 @@
 //
 // Magisk userspace API - manager-level handshake detection.
 //
-// Magisk runs a userspace daemon (magiskd) that listens on a filesystem
-// Unix socket. The daemon protocol uses plain int32 codes.
+// Magisk is structurally different from KernelSU and APatch:
+// it runs a userspace daemon (magiskd) that listens on an abstract
+// Unix domain socket, and the Magisk Manager app connects to it
+// to request root, list modules, toggle settings, etc.
 //
+// The "manager-level handshake" therefore means:
+//   1. We can find and connect to the magiskd abstract socket,
+//   2. We speak the Magisk daemon protocol and get valid replies,
+//   3. We can distinguish:
+//        - "magiskd is present" (any app can connect for some ops)
+//        - "we have su access" (we can call su-related requests)
+//        - "we are the manager" (manager package is whitelisted by
+//          magiskd's pkg_name / signature check)
+//
+// Additional detection vectors:
+//   - /sbin/.magisk/ mount namespace traces
+//   - Zygisk (Zygote injection) detection via /proc/self/maps,
+//     /proc/self/attr/current, or Zygisk-specific files
+//   - su binary behavior (Magisk's su replies with specific output)
+//   - /data/adb/magisk/ filesystem traces
+//
+// Magisk daemon protocol (simplified):
+//   - Client connects to abstract socket @magiskd (or dynamic name),
+//   - Sends a request header + payload,
+//   - Daemon responds with a response header + payload.
+//   - Request types include: version check, su request, module list, etc.
+//
+// Historical note: older Magisk versions used /dev/socket/magiskd
+// (filesystem socket); newer versions use abstract sockets with
+// dynamically-generated names to hinder detection.  We probe both.
+
 #pragma once
 
 #include <cstdint>
@@ -12,44 +40,93 @@
 
 namespace magisk {
 
+// --- Socket path patterns -------------------------------------------------
+//
+// Based on Magisk 31.0 source (native/src/core/daemon.rs) the daemon socket is
+// a *filesystem* socket, NOT an abstract socket:
+//     sock_path = get_magisk_tmp() + "/" + MAIN_SOCKET
+//   - MAIN_SOCKET  = ".magisk/device/socket"   (consts.hpp: DEVICEDIR "/socket")
+//   - get_magisk_tmp() => "/debug_ramdisk" if /debug_ramdisk/.magisk exists,
+//                         else "/sbin"       if /sbin/.magisk exists
+// So the real candidates are (listed below).  Older /dev/socket/magiskd is
+// obsolete and must not be used as the primary path.
+
 // Preferred filesystem socket paths (Magisk 31.x)
-constexpr const char* DSOCKET_PATH     = "/debug_ramdisk/.magisk/device/socket";
+constexpr const char* DSOCKET_PATH = "/debug_ramdisk/.magisk/device/socket";
 constexpr const char* SBIN_SOCKET_PATH = "/sbin/.magisk/device/socket";
+
+// Legacy path kept only as a last-resort fallback
 constexpr const char* LEGACY_SOCKET_PATH = "/dev/socket/magiskd";
+
+// Marker used to scan /proc/net/unix for any *filesystem* (non-abstract)
+// socket whose path contains the magisk device socket directory.
 constexpr const char* SOCKET_DIR_MARKER = ".magisk/device/socket";
 
-// Filesystem hint paths
-constexpr const char* MAGISK_SBIN_DIR         = "/sbin/.magisk";
-constexpr const char* MAGISK_DATA_ADB_DIR     = "/data/adb/magisk";
-constexpr const char* MAGISK_DB_PATH          = "/data/adb/magisk.db";
-constexpr const char* MAGISK_MODULES_DIR      = "/data/adb/modules";
+// --- Filesystem hint paths ------------------------------------------------
+
+constexpr const char* MAGISK_SBIN_DIR      = "/sbin/.magisk";
+constexpr const char* MAGISK_DATA_ADB_DIR  = "/data/adb/magisk";
+constexpr const char* MAGISK_DB_PATH       = "/data/adb/magisk.db";
+constexpr const char* MAGISK_MODULES_DIR   = "/data/adb/modules";
 constexpr const char* MAGISK_MODULES_UPDATE_DIR = "/data/adb/modules_update";
-constexpr const char* MAGISK_POST_FS_DATA     = "/data/adb/post-fs-data.d";
-constexpr const char* MAGISK_SERVICE_D        = "/data/adb/service.d";
+constexpr const char* MAGISK_POST_FS_DATA  = "/data/adb/post-fs-data.d";
+constexpr const char* MAGISK_SERVICE_D     = "/data/adb/service.d";
 
+// --- Su binary detection --------------------------------------------------
+
+// Magisk's su --version outputs a string like "xx.x:MAGISK"
 constexpr const char* SU_VERSION_MAGIC = "MAGISK";
-constexpr const char* ZYGISK_LIB_NAME  = "zygisk";
-constexpr const char* ZYGISK_PROPERTY  = "ro.zygisk";
 
-constexpr const char* SUSFS_PROC_PREFIX = "/proc/sys/kernel/susfs_";
-constexpr const char* SUSFS_MODULE_DIR  = "/sys/module/susfs";
-constexpr const char* SUSFS_KSU_MARKER  = "/data/adb/ksu/modules/susfs";
+// --- Zygisk detection -----------------------------------------------------
 
+// Zygisk injects libzygisk.so into zygote. We can check for:
+//   1. /proc/self/maps containing "zygisk"
+//   2. /proc/self/maps containing "libzygisk"
+//   3. ro.zygisk property (if available - often hidden)
+constexpr const char* ZYGISK_LIB_NAME     = "zygisk";
+constexpr const char* ZYGISK_PROPERTY     = "ro.zygisk";
+
+// SusFS detection - susfs is a Magisk/KernelSU module/feature for
+// hiding root traces. We detect it by checking for:
+//   - /proc/sys/kernel/susfs_*  (kernel parameter)
+//   - SusFS-specific entries in /sys/module/
+//   - susfs su loop device markers
+constexpr const char* SUSFS_PROC_PREFIX   = "/proc/sys/kernel/susfs_";
+constexpr const char* SUSFS_MODULE_DIR    = "/sys/module/susfs";
+constexpr const char* SUSFS_KSU_MARKER    = "/data/adb/ksu/modules/susfs";
+
+// --- Daemon request/response codes ---------------------------------------
+//
+// ---------------------------------------------------------------------------
+// Magisk daemon protocol (based on Magisk 31.0, native/src/core/lib.rs and
+// native/src/core/daemon.rs) — plain int32 codes over the unix socket.
+//
+// Client flow (daemon.rs connect_daemon / send_request):
+//   1. connect(filesystem_socket)
+//   2. write_pod(code)            // RequestCode as int32
+//   3. read_pod(respond_code)     // RespondCode.OK(0)  => handshake OK
+//   4. read payload               // depends on the request
+// ---------------------------------------------------------------------------
+
+// RequestCode (lib.rs) — subset we use for detection
 enum DaemonRequestCode : uint32_t {
     START_DAEMON       = 0,
-    CHECK_VERSION      = 1,
-    CHECK_VERSION_CODE = 2,
+    CHECK_VERSION      = 1,   // daemon replies with version STRING (encodable str)
+    CHECK_VERSION_CODE = 2,   // daemon replies with MAGISK_VER_CODE (int32)
     STOP_DAEMON        = 3,
-    SUPERUSER          = 5,
+    // 4 == _SYNC_BARRIER_  (reserved)
+    SUPERUSER          = 5,   // internal, not a handshake probe
 };
 
+// RespondCode (lib.rs)
 enum DaemonRespondCode : int32_t {
     RESP_ERROR         = -1,
-    RESP_OK            = 0,
+    RESP_OK            = 0,   // handshake succeeded
     RESP_ROOT_REQUIRED = 1,
-    RESP_ACCESS_DENIED = 2,
+    RESP_ACCESS_DENIED = 2,   // peer not root/zygote/magisk-client
 };
 
+// Version code encoding: e.g. 26400 = 26.4
 static inline int version_major(uint32_t ver_code) {
     return static_cast<int>(ver_code / 1000);
 }
@@ -57,24 +134,28 @@ static inline int version_minor(uint32_t ver_code) {
     return static_cast<int>((ver_code % 1000) / 10);
 }
 
+// --- Privilege levels determined by detection -----------------------------
+
 enum class PrivLevel {
-    None,
-    Unconfirmed,
-    DaemonOnly,
-    Su,
-    Manager,
+    None,           // no Magisk detected
+    Unconfirmed,    // traces found but no handshake confirmation
+    DaemonOnly,     // magiskd socket found + handshake works
+    Su,             // we can get a root shell via su
+    Manager,        // we are the manager app (package whitelisted)
 };
+
+// --- Magisk variant flags -------------------------------------------------
 
 enum class Variant : uint32_t {
     Standard     = 0,
-    Zygisk       = (1u << 0),
-    Shamiko      = (1u << 1),
-    SusFS        = (1u << 2),
-    LSPosed      = (1u << 3),
-    MagiskHide   = (1u << 4),
-    Kitsune      = (1u << 5),
-    Alpha        = (1u << 6),
-    LSPosedLite  = (1u << 7),
+    Zygisk       = (1u << 0),  // Zygisk enabled
+    Shamiko      = (1u << 1),  // Shamiko module (hide)
+    SusFS        = (1u << 2),  // SusFS hide
+    LSPosed      = (1u << 3),  // LSPosed / Xposed framework
+    MagiskHide   = (1u << 4),  // MagiskHide active
+    Kitsune      = (1u << 5),  // Kitsune Magisk (Magisk Delta fork)
+    Alpha        = (1u << 6),  // Magisk Alpha fork
+    LSPosedLite  = (1u << 7),  // LSPosed lite / zygisk-next
 };
 
 inline Variant operator|(Variant a, Variant b) {
