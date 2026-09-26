@@ -8,7 +8,7 @@ C++17 本地 HTTP 服务，集成 [ksu-detect](https://github.com/xioo0317/ksu-d
 - **单路由**：`POST /api/v1/detect` — 一键检测 KernelSU / APatch / Magisk / SusFS
 - **落盘而非打印**：服务全程不向终端输出任何内容；检测结果以 JSON 写入 `/data/local/tmp/coverRoot/root_detect.json`，供其它程序读取
 - **真实握手协议**：复刻各官方管理器的内核握手，而非简单文件探测；SusFS 无兜底（接口不应答就是没有）
-- **双构建模式**：支持主机 g++ 编译与 Android NDK（ndk-build）交叉编译
+- **精简输出**：JSON 仅报告各 Root 管理器是否存在，KernelSU 额外报告运行模式
 
 ## 项目结构
 
@@ -92,53 +92,33 @@ adb shell /data/local/tmp/local_api
 
 ```json
 {
-  "detected": "magisk",
-  "kernelsu": { "present": false },
-  "apatch": { "present": false },
-  "magisk": {
+  "detected": "kernelsu",
+  "kernelsu": {
     "present": true,
-    "priv_level": "daemon_only",
-    "version_code": 27000,
-    "version_str": "27.0",
-    "socket_path": "/debug_ramdisk/.magisk/device/socket",
-    "has_zygisk": true,
-    "has_shamiko": false,
-    "has_susfs": false,
-    "has_lsposed": false,
-    "has_magiskhide": false,
-    "is_kitsune": false,
-    "is_alpha": false,
-    "su_binary_detected": true,
-    "su_binary_path": "/system/bin/su"
+    "mode": "lkm-bundled"
+  },
+  "apatch": {
+    "present": false
+  },
+  "magisk": {
+    "present": false
   },
   "susfs": {
-    "present": true,
-    "version": "v1.5.9",
-    "abi": "prctl",
-    "detail": "prctl handshake (susfs v1 ABI)",
-    "paired_with": "magisk"
-  },
-  "jailbreak": {
-    "detected": true,
-    "indicators": ["ro.debuggable=1", "build_tags=test-keys"]
+    "present": true
   }
 }
 ```
 
-### 关键字段说明
+### 字段说明
 
 | 字段 | 说明 |
 |------|------|
-| `detected` | Root 方案：`none` / `kernelsu` / `kernelpatch` / `magisk` / `mixed` |
+| `detected` | 主 Root 方案：`none` / `kernelsu` / `kernelpatch` / `magisk` / `mixed` |
 | `kernelsu.present` | KernelSU 是否正在运行 |
+| `kernelsu.mode` | KernelSU 运行模式：`lkm-bundled` / `lkm` / `built-in` / `late-load` / `legacy-prctl` |
 | `apatch.present` | APatch 是否正在运行 |
 | `magisk.present` | Magisk 守护进程是否正在运行 |
-| `magisk.is_kitsune` | 是否为 Kitsune（Delta）Magisk |
-| `magisk.is_alpha` | 是否为 Magisk Alpha |
-| `magisk.has_zygisk` | Zygisk 是否启用 |
 | `susfs.present` | SusFS 内核接口是否握手成功 |
-| `susfs.version` | 内核回报的精确版本 |
-| `susfs.abi` | 应答的 ABI：`reboot_v2`（v2.0.0+）/ `prctl`（v1.5.3–v1.5.12） |
 
 ### 脚本读取示例
 
@@ -149,8 +129,11 @@ curl -s -X POST http://localhost:8080/api/v1/detect
 # 从落盘文件读取当前 Root 方案
 jq -r '.detected' /data/local/tmp/coverRoot/root_detect.json
 
-# 读取 SusFS 版本
-jq -r '.susfs.version' /data/local/tmp/coverRoot/root_detect.json
+# 检查 KernelSU 模式
+jq -r '.kernelsu.mode' /data/local/tmp/coverRoot/root_detect.json
+
+# 检查 SusFS 是否存在
+jq -r '.susfs.present' /data/local/tmp/coverRoot/root_detect.json
 ```
 
 ## 测试
@@ -162,11 +145,10 @@ jq -r '.susfs.version' /data/local/tmp/coverRoot/root_detect.json
 
 ## 技术说明
 
-- **KernelSU 检测**：reboot syscall hook（`0xDEADBEEF / 0xCAFEBABE`）取得驱动 fd，ioctl `GET_INFO` / `GET_MANAGER_APPID`，legacy prctl 回退
+- **KernelSU 检测**：reboot syscall hook（`0xDEADBEEF / 0xCAFEBABE`）取得驱动 fd，ioctl `GET_INFO` 获取运行模式
 - **APatch 检测**：经 supercall（syscall #45，伪装 truncate）用固定 key `su` 发 `SUPERCALL_HELLO`，回报 `0x11581158` 即存在；无需超级密钥
 - **Magisk 检测**：Unix domain socket 与 magiskd 握手，支持 `/debug_ramdisk/.magisk/device/socket` 等文件系统 socket 路径
 - **SusFS 检测**：两阶段握手——reboot（第二魔术 `0xFAFAFAFA`，`SHOW_VERSION`）识别 v2.0.0+，prctl（`0xDEADBEEF`）识别 v1.5.3–v1.5.12；任一阶段成功才确认，**无兜底**
-- **Jailbreak 指标**：ro.debuggable、verified boot state、SELinux、Xposed 等
 
 ## 许可证
 
