@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Manager-level detector implementation for KernelSU, APatch,
-// Magisk (with Zygisk / SusFS / variants), and jailbreak hints.
+// Magisk, and SusFS handshake verification.
 //
+// Only checks: is the root manager present? For KernelSU, also
+// reports the mode (e.g. "lkm-bundled").
 
 #include "detector.hpp"
 #include "ksu_uapi.hpp"
@@ -18,8 +20,6 @@
 #include <cerrno>
 #include <string>
 #include <vector>
-#include <fstream>
-#include <sstream>
 
 #include <unistd.h>
 #include <fcntl.h>
@@ -32,7 +32,6 @@
 #include <sys/types.h>
 #include <sys/un.h>
 #include <sys/socket.h>
-#include <dirent.h>
 
 namespace ksu_detector {
 
@@ -108,25 +107,6 @@ bool Detector::ksu_do_get_info(int fd, ksu::get_info_cmd& info) {
     return info.version != 0;
 }
 
-bool Detector::ksu_do_get_manager_appid(int fd, uint32_t& appid) {
-    ksu::get_manager_appid_cmd cmd{};
-    if (ioctl(fd, ksu::IOCTL_GET_MANAGER_APPID, &cmd) < 0) return false;
-    appid = cmd.appid;
-    return true;
-}
-
-static bool check_gki_kernel() {
-    FILE* f = fopen("/proc/version", "r");
-    if (f) {
-        char buf[512];
-        if (fgets(buf, sizeof(buf), f)) {
-            fclose(f);
-            if (strstr(buf, "android") || strstr(buf, "gki")) return true;
-        } else { fclose(f); }
-    }
-    return false;
-}
-
 KsuResult Detector::probe_ksu() {
     KsuResult result;
     install_sigsys();
@@ -135,45 +115,14 @@ KsuResult Detector::probe_ksu() {
         ksu::get_info_cmd info;
         if (ksu_do_get_info(fd, info)) {
             result.present = true;
-            result.kernel_compromised = true;
-            result.compromise_reason = "ksu-driver-fd (reboot-magic install + GET_INFO success)";
-            result.version = info.version;
-            result.uapi_version = info.uapi_version;
-            result.flags = info.flags;
-            result.features = info.features;
-            result.variant = KsuVariant::Standard;
 
             if (info.flags & ksu::GET_INFO_FLAG_LATE_LOAD) {
                 result.mode_str = "late-load";
-                result.variant = result.variant | KsuVariant::LateLoad;
             } else if (info.flags & ksu::GET_INFO_FLAG_LKM) {
                 result.mode_str = (info.flags & ksu::GET_INFO_FLAG_BUNDLED) ? "lkm-bundled" : "lkm";
-                result.variant = result.variant | KsuVariant::LKM;
-                if (check_gki_kernel())
-                    result.variant = result.variant | KsuVariant::GKI | KsuVariant::KMICompatible;
             } else {
                 result.mode_str = "built-in";
-                result.variant = result.variant | KsuVariant::BuiltIn;
             }
-            if (info.flags & ksu::GET_INFO_FLAG_PR_BUILD)
-                result.variant = result.variant | KsuVariant::PRBuild;
-
-            uid_t uid = getuid();
-            if (uid == 0) result.priv_level = KsuPrivLevel::Root;
-            else if (info.flags & ksu::GET_INFO_FLAG_MANAGER) result.priv_level = KsuPrivLevel::Manager;
-            else {
-                uint32_t appid = 0;
-                if (ksu_do_get_manager_appid(fd, appid)) {
-                    result.priv_level = KsuPrivLevel::ManagerOrRoot;
-                    result.manager_appid = appid;
-                } else { result.priv_level = KsuPrivLevel::User; }
-            }
-            if (result.manager_appid == std::nullopt && result.priv_level >= KsuPrivLevel::ManagerOrRoot) {
-                uint32_t appid = 0;
-                if (ksu_do_get_manager_appid(fd, appid)) result.manager_appid = appid;
-            }
-            // SusFS is detected independently via its own syscall handshake
-            // (see probe_susfs()); no file-path guessing here.
         }
         close(fd);
     }
@@ -181,11 +130,7 @@ KsuResult Detector::probe_ksu() {
         long legacy_ver = prctl(ksu::LEGACY_MAGIC, 0, 0, 0, 0);
         if (legacy_ver >= 0) {
             result.present = true;
-            result.kernel_compromised = true;
-            result.compromise_reason = "legacy-prctl (prctl(KSU_LEGACY_MAGIC) succeeded)";
-            result.version = static_cast<uint32_t>(legacy_ver);
             result.mode_str = "legacy-prctl";
-            result.priv_level = KsuPrivLevel::User;
         }
     }
     return result;
@@ -207,27 +152,12 @@ bool Detector::ap_hello(const char* key) {
     return static_cast<uint32_t>(ret) == apatch::HELLO_MAGIC;
 }
 
-uint32_t Detector::ap_kp_ver(const char* key) { return static_cast<uint32_t>(ap_raw_call(key, apatch::SUPERCALL_KERNELPATCH_VER)); }
-uint32_t Detector::ap_k_ver(const char* key) { return static_cast<uint32_t>(ap_raw_call(key, apatch::SUPERCALL_KERNEL_VER)); }
-long Detector::ap_su_nums(const char* key) { return ap_raw_call(key, apatch::SUPERCALL_SU_NUMS); }
-long Detector::ap_kpm_nums(const char* key) { return ap_raw_call(key, apatch::SUPERCALL_KPM_NUMS); }
-long Detector::ap_safemode(const char* key) { return ap_raw_call(key, apatch::SUPERCALL_SU_GET_SAFEMODE); }
-
 ApResult Detector::probe_apatch() {
     ApResult result;
-    // We only need to identify whether the APatch/KernelPatch module runs.
-    // The fixed "su" key answers SUPERCALL_HELLO whenever the caller is on
-    // the su allow list (root always is). No superkey is requested.
     const char* key = "su";
-    if (!ap_hello(key)) return result;
-
-    result.present = true;
-    result.priv_level = ApPrivLevel::Detected;
-    result.kp_version = ap_kp_ver(key);
-    result.kernel_version = ap_k_ver(key);
-    long nums = ap_su_nums(key); if (nums >= 0) result.su_uid_count = nums;
-    long kpms = ap_kpm_nums(key); if (kpms >= 0) result.kpm_count = kpms;
-    long sm = ap_safemode(key); if (sm >= 0) result.safemode = sm;
+    if (ap_hello(key)) {
+        result.present = true;
+    }
     return result;
 }
 
@@ -241,27 +171,21 @@ bool Detector::magisk_find_socket(std::string& out_path) {
         return stat(p, &st) == 0 && S_ISSOCK(st.st_mode);
     };
 
-    // 1) Preferred filesystem socket paths (Magisk 31: get_magisk_tmp() + "/.magisk/device/socket")
     if (is_sock(magisk::DSOCKET_PATH))      { out_path = magisk::DSOCKET_PATH; return true; }
     if (is_sock(magisk::SBIN_SOCKET_PATH))  { out_path = magisk::SBIN_SOCKET_PATH; return true; }
 
-    // 2) Scan /proc/net/unix for any *filesystem* socket whose path contains
-    //    the magisk device socket dir (robust across MAGISKTMP location).
     FILE* f = fopen("/proc/net/unix", "r");
     if (f) {
         char line[512];
         if (fgets(line, sizeof(line), f)) {
             while (fgets(line, sizeof(line), f)) {
-                // columns are e.g.:
-                // 0000000000000000: 00000002 00000000 00010000 0001 01 31867 /debug_ramdisk/.magisk/device/socket
-                // abstract sockets start with '@' — skip those.
                 char* sp = strrchr(line, ' ');
                 if (!sp) continue;
                 while (*sp == ' ' || *sp == '\n' || *sp == '\r') { *sp = '\0'; if (sp == line) break; --sp; }
                 char* path = strrchr(line, ' ');
                 if (!path) continue;
                 ++path;
-                if (*path == '@' || !*path) continue;                    // abstract or empty
+                if (*path == '@' || !*path) continue;
                 if (strstr(path, magisk::SOCKET_DIR_MARKER)) {
                     out_path = path;
                     fclose(f);
@@ -272,13 +196,11 @@ bool Detector::magisk_find_socket(std::string& out_path) {
         fclose(f);
     }
 
-    // 3) Last-resort legacy path (obsolete for Magisk 31)
     if (is_sock(magisk::LEGACY_SOCKET_PATH)) { out_path = magisk::LEGACY_SOCKET_PATH; return true; }
     return false;
 }
 
 bool Detector::magisk_probe_daemon(const std::string& socket_path, uint32_t& out_version_code, std::string& out_version_str) {
-    // --- helper: connect to a (filesystem or abstract) unix socket ---
     auto do_connect = [](const std::string& path) -> int {
         int sock = socket(AF_UNIX, SOCK_STREAM, 0);
         if (sock < 0) return -1;
@@ -310,31 +232,22 @@ bool Detector::magisk_probe_daemon(const std::string& socket_path, uint32_t& out
         return n == static_cast<ssize_t>(sizeof(v));
     };
 
-    // Magisk 31 daemon flow (daemon.rs handle_requests):
-    //   connect -> write_pod(RequestCode) -> read_pod(RespondCode)
-    //   OK(0)  => handshake acknowledged, then read request payload.
-    // Non-root / non-magisk / non-zygote peers get ACCESS_DENIED(2) and are
-    // dropped, so the caller is expected to run this detector as root.
-
-    // --- Probe 1: CHECK_VERSION_CODE(2) -> replies MAGISK_VER_CODE (int32) ---
     {
         int sock = do_connect(socket_path);
         if (sock < 0) return false;
         if (!write_i32(sock, magisk::DaemonRequestCode::CHECK_VERSION_CODE)) { close(sock); return false; }
         int32_t resp = -1;
         if (!read_i32(sock, resp)) { close(sock); return false; }
-        if (resp != magisk::DaemonRespondCode::RESP_OK) { close(sock); return false; } // access denied etc.
+        if (resp != magisk::DaemonRespondCode::RESP_OK) { close(sock); return false; }
         int32_t ver = 0;
         if (!read_i32(sock, ver) || ver <= 0) { close(sock); return false; }
         out_version_code = static_cast<uint32_t>(ver);
         close(sock);
     }
 
-    // --- Probe 2 (best effort): CHECK_VERSION(1) -> replies version STRING ---
-    // str encoding: [int32 len][bytes] (socket.rs Encodable for str)
     {
         int sock = do_connect(socket_path);
-        if (sock < 0) return true;   // vcode probe already proved daemon
+        if (sock < 0) return true;
         bool ok = write_i32(sock, magisk::DaemonRequestCode::CHECK_VERSION);
         int32_t resp = -1;
         if (!ok || !read_i32(sock, resp) || resp != magisk::DaemonRespondCode::RESP_OK) { close(sock); return true; }
@@ -355,63 +268,15 @@ bool Detector::magisk_probe_daemon(const std::string& socket_path, uint32_t& out
     return true;
 }
 
-bool Detector::magisk_check_zygisk() {
-    FILE* f = fopen("/proc/self/maps", "r");
-    if (!f) return false;
-    char line[1024]; bool found = false;
-    while (fgets(line, sizeof(line), f)) { if (strstr(line, "zygisk") || strstr(line, "Zygisk")) { found = true; break; } }
-    fclose(f); return found;
-}
-
-bool Detector::magisk_check_su_binary(std::string& out_path) {
-    static const char* su_paths[] = { "/system/bin/su", "/system/xbin/su", "/sbin/su", "/su/bin/su", "/magisk/.core/bin/su", nullptr };
-    for (int i = 0; su_paths[i]; i++) { struct stat st; if (stat(su_paths[i], &st) == 0) { out_path = su_paths[i]; return true; } }
-    return false;
-}
-
-bool Detector::magisk_check_module(const std::string& module_id) {
-    std::string path = std::string(magisk::MAGISK_MODULES_DIR) + "/" + module_id;
-    struct stat st; return stat(path.c_str(), &st) == 0;
-}
-
-bool Detector::magisk_check_kitsune() {
-    struct stat st;
-    return stat("/data/adb/magisk_delta", &st) == 0 || stat("/data/adb/delta", &st) == 0 || stat("/sbin/.magisk/config", &st) == 0;
-}
-
-bool Detector::magisk_check_alpha() {
-    struct stat st;
-    return stat("/data/adb/magisk_alpha", &st) == 0 || stat("/data/adb/alpha", &st) == 0;
-}
-
 MagiskResult Detector::probe_magisk() {
     MagiskResult result;
     std::string sock_path;
-    // Root handshake is the ONLY proof Magisk is actively running.
     if (magisk_find_socket(sock_path)) {
-        result.socket_path = sock_path;
-        uint32_t ver_code = 0; std::string ver_str;
+        uint32_t ver_code = 0;
+        std::string ver_str;
         if (magisk_probe_daemon(sock_path, ver_code, ver_str)) {
             result.present = true;
-            result.priv_level = MagiskPrivLevel::DaemonOnly;
-            result.version_code = ver_code;
-            result.version_str = ver_str;
-            if (getuid() == 0) result.priv_level = MagiskPrivLevel::Su;
         }
-    }
-    // Traces are informational only — they never assert "present".
-    result.has_zygisk = magisk_check_zygisk();
-    if (result.has_zygisk) { result.zygisk_detected = true; result.zygisk_detail = "maps-scan"; }
-    std::string su_path;
-    if (magisk_check_su_binary(su_path)) { result.su_binary_detected = true; result.su_binary_path = su_path; }
-    if (result.present) {
-        result.has_shamiko = magisk_check_module("shamiko");
-        result.has_lsposed = magisk_check_module("lsposed") || magisk_check_module("zygisk_lsposed") || magisk_check_module("riru_lsposed");
-        result.has_magiskhide = magisk_check_module("magiskhide");
-        result.is_kitsune = magisk_check_kitsune();
-        result.is_alpha = magisk_check_alpha();
-        // SusFS is confirmed via its own syscall handshake (probe_susfs()),
-        // not by guessing proc/sys paths.
     }
     return result;
 }
@@ -424,14 +289,10 @@ SusfsResult Detector::probe_susfs() {
     SusfsResult result;
     install_sigsys();
 
-    // Phase 1 — v2.0.0+ reboot ABI:
-    //   syscall(SYS_reboot, 0xDEADBEEF, 0xFAFAFAFA, SHOW_VERSION, &v2)
-    // The SusFS reboot handler recognises the second magic 0xFAFAFAFA,
-    // executes SHOW_VERSION, writes the version string and sets err = 0.
     {
         susfs::version_cmd v2;
         memset(&v2, 0, sizeof(v2));
-        v2.err = susfs::ERR_CMD_NOT_SUPPORTED;  // preset 255
+        v2.err = susfs::ERR_CMD_NOT_SUPPORTED;
         g_sigsys_hit_ = false;
         syscall(SYS_reboot,
                 static_cast<unsigned int>(susfs::OPTION_MAGIC),
@@ -439,73 +300,25 @@ SusfsResult Detector::probe_susfs() {
                 static_cast<unsigned long>(susfs::CMD_SHOW_VERSION),
                 &v2);
         if (!g_sigsys_hit_ && v2.err == 0) {
-            v2.susfs_version[susfs::VERSION_STR_LEN - 1] = '\0';
             result.detected = true;
-            result.abi = SusfsAbi::RebootV2;
-            result.version = v2.susfs_version;
-            result.detail = "reboot-magic handshake (susfs v2 ABI)";
             return result;
         }
     }
 
-    // Phase 2 — v1.5.3 - v1.5.12 prctl ABI:
-    //   prctl(0xDEADBEEF, SHOW_VERSION, buf, NULL, &error)
-    // The SusFS prctl hook recognises option 0xDEADBEEF, executes
-    // SHOW_VERSION, writes the version string and sets error = 0.
     {
         char ver_buf[susfs::VERSION_STR_LEN];
         memset(ver_buf, 0, sizeof(ver_buf));
-        int error = susfs::PRCTL_ERR_UNSUPPORTED;  // preset -1
+        int error = susfs::PRCTL_ERR_UNSUPPORTED;
         prctl(static_cast<int>(susfs::OPTION_MAGIC),
               static_cast<unsigned long>(susfs::CMD_SHOW_VERSION),
               ver_buf, NULL, &error);
         if (error == 0) {
-            ver_buf[susfs::VERSION_STR_LEN - 1] = '\0';
             result.detected = true;
-            result.abi = SusfsAbi::Prctl;
-            result.version = ver_buf;
-            result.detail = "prctl handshake (susfs v1 ABI)";
             return result;
         }
     }
 
-    // No fallback: neither ABI executed SHOW_VERSION -> SusFS is absent.
     return result;
-}
-
-void Detector::probe_variants(DetectResult& out) {
-    if (!out.susfs.detected) return;
-    out.susfs_detected = true;
-    // Attribute the finding to whichever root solution is active.
-    if (out.ksu.present)       out.susfs_source = "kernelsu";
-    else if (out.magisk.present) out.susfs_source = "magisk";
-    else                       out.susfs_source = "kernel";
-
-    // Backfill the variant flags on the matching solution result.
-    if (out.ksu.present) {
-        out.ksu.susfs_detected = true;
-        out.ksu.susfs_detail = out.susfs.detail;
-        out.ksu.variant = out.ksu.variant | KsuVariant::SusFS;
-    }
-    if (out.magisk.present) out.magisk.has_susfs = true;
-}
-
-void Detector::probe_jailbreak(DetectResult& out) {
-    JailbreakHint& jb = out.jailbreak;
-    FILE* fp = popen("getprop ro.debuggable 2>/dev/null", "r");
-    if (fp) { char val[16]={0}; if (fgets(val, sizeof(val), fp) && atoi(val)==1) jb.indicators.push_back("ro.debuggable=1"); pclose(fp); }
-    fp = popen("getprop ro.boot.verifiedbootstate 2>/dev/null", "r");
-    if (fp) { char val[32]={0}; if (fgets(val, sizeof(val), fp) && (strstr(val,"orange")||strstr(val,"yellow"))) jb.indicators.push_back("verified_boot_state=orange/yellow"); pclose(fp); }
-    fp = popen("getprop ro.build.type 2>/dev/null", "r");
-    if (fp) { char val[32]={0}; if (fgets(val, sizeof(val), fp) && (strstr(val,"userdebug")||strstr(val,"eng"))) jb.indicators.push_back("build_type=userdebug/eng"); pclose(fp); }
-    fp = popen("getprop ro.build.tags 2>/dev/null", "r");
-    if (fp) { char val[64]={0}; if (fgets(val, sizeof(val), fp) && strstr(val,"test-keys")) jb.indicators.push_back("build_tags=test-keys"); pclose(fp); }
-    fp = fopen("/sys/fs/selinux/enforce", "r");
-    if (fp) { int enforce=1; if (fscanf(fp,"%d",&enforce)==1 && enforce==0) jb.indicators.push_back("selinux=permissive"); fclose(fp); }
-    struct stat st;
-    if (stat("/data/data/de.robv.android.xposed.installer",&st)==0 || stat("/system/framework/XposedBridge.jar",&st)==0 || stat("/system/framework/edxp",&st)==0)
-        jb.indicators.push_back("xposed-framework");
-    jb.detected = !jb.indicators.empty();
 }
 
 DetectResult Detector::run_all() {
@@ -514,8 +327,7 @@ DetectResult Detector::run_all() {
     result.ap = probe_apatch();
     result.magisk = probe_magisk();
     result.susfs = probe_susfs();
-    probe_variants(result);
-    probe_jailbreak(result);
+
     int count = 0;
     if (result.ksu.present) count++;
     if (result.ap.present) count++;
@@ -529,8 +341,7 @@ DetectResult Detector::run_all() {
 }
 
 // ===========================================================================
-// JSON serialization (enum -> string helpers have internal linkage so they
-// never collide with anything in main.cpp)
+// JSON serialization
 // ===========================================================================
 
 using json = nlohmann::json;
@@ -549,37 +360,6 @@ const char* kernel_type_name(KernelType t) {
     return "unknown";
 }
 
-const char* ksu_priv_name(KsuPrivLevel p) {
-    switch (p) {
-        case KsuPrivLevel::None:          return "none";
-        case KsuPrivLevel::User:          return "user";
-        case KsuPrivLevel::ManagerOrRoot: return "manager_or_root";
-        case KsuPrivLevel::Manager:       return "manager";
-        case KsuPrivLevel::Root:          return "root";
-    }
-    return "none";
-}
-
-const char* magisk_priv_name(MagiskPrivLevel p) {
-    switch (p) {
-        case MagiskPrivLevel::None:       return "none";
-        case MagiskPrivLevel::Unconfirmed:return "unconfirmed";
-        case MagiskPrivLevel::DaemonOnly: return "daemon_only";
-        case MagiskPrivLevel::Su:         return "su";
-        case MagiskPrivLevel::Manager:    return "manager";
-    }
-    return "none";
-}
-
-const char* susfs_abi_name(SusfsAbi a) {
-    switch (a) {
-        case SusfsAbi::None:     return "none";
-        case SusfsAbi::Prctl:    return "prctl";
-        case SusfsAbi::RebootV2: return "reboot_v2";
-    }
-    return "unknown";
-}
-
 } // anonymous namespace
 
 std::string result_to_json_string(const DetectResult& r) {
@@ -591,26 +371,7 @@ std::string result_to_json_string(const DetectResult& r) {
         json k;
         k["present"] = r.ksu.present;
         if (r.ksu.present) {
-            k["version"] = r.ksu.version;
-            k["uapi_version"] = r.ksu.uapi_version;
-            k["flags"] = r.ksu.flags;
-            k["features"] = r.ksu.features;
             k["mode"] = r.ksu.mode_str;
-            k["priv_level"] = ksu_priv_name(r.ksu.priv_level);
-            if (r.ksu.manager_appid.has_value())
-                k["manager_appid"] = r.ksu.manager_appid.value();
-            k["is_manager"] =
-                static_cast<bool>(r.ksu.flags & ksu::GET_INFO_FLAG_MANAGER);
-            k["is_lkm"] =
-                static_cast<bool>(r.ksu.flags & ksu::GET_INFO_FLAG_LKM);
-            k["is_late_load"] =
-                static_cast<bool>(r.ksu.flags & ksu::GET_INFO_FLAG_LATE_LOAD);
-            k["is_gki"] =
-                has_ksu_variant(r.ksu.variant, KsuVariant::GKI);
-            k["kernel_compromised"] = r.ksu.kernel_compromised;
-            k["compromise_reason"] = r.ksu.compromise_reason;
-            k["has_susfs"] = r.ksu.susfs_detected;
-            k["susfs_detail"] = r.ksu.susfs_detail;
         }
         j["kernelsu"] = std::move(k);
     }
@@ -619,16 +380,6 @@ std::string result_to_json_string(const DetectResult& r) {
     {
         json a;
         a["present"] = r.ap.present;
-        if (r.ap.present) {
-            a["kp_version"] = r.ap.kp_version;
-            a["kernel_version"] = r.ap.kernel_version;
-            if (r.ap.su_uid_count.has_value())
-                a["su_uid_count"] = r.ap.su_uid_count.value();
-            if (r.ap.kpm_count.has_value())
-                a["kpm_count"] = r.ap.kpm_count.value();
-            if (r.ap.safemode.has_value())
-                a["safemode"] = r.ap.safemode.value();
-        }
         j["apatch"] = std::move(a);
     }
 
@@ -636,19 +387,6 @@ std::string result_to_json_string(const DetectResult& r) {
     {
         json m;
         m["present"] = r.magisk.present;
-        m["priv_level"] = magisk_priv_name(r.magisk.priv_level);
-        m["version_code"] = r.magisk.version_code;
-        m["version_str"] = r.magisk.version_str;
-        m["socket_path"] = r.magisk.socket_path;
-        m["has_zygisk"] = r.magisk.has_zygisk;
-        m["has_shamiko"] = r.magisk.has_shamiko;
-        m["has_susfs"] = r.magisk.has_susfs;
-        m["has_lsposed"] = r.magisk.has_lsposed;
-        m["has_magiskhide"] = r.magisk.has_magiskhide;
-        m["is_kitsune"] = r.magisk.is_kitsune;
-        m["is_alpha"] = r.magisk.is_alpha;
-        m["su_binary_detected"] = r.magisk.su_binary_detected;
-        m["su_binary_path"] = r.magisk.su_binary_path;
         j["magisk"] = std::move(m);
     }
 
@@ -656,21 +394,7 @@ std::string result_to_json_string(const DetectResult& r) {
     {
         json s;
         s["present"] = r.susfs.detected;
-        if (r.susfs.detected) {
-            s["version"] = r.susfs.version;
-            s["abi"] = susfs_abi_name(r.susfs.abi);
-            s["detail"] = r.susfs.detail;
-            s["paired_with"] = r.susfs_source;
-        }
         j["susfs"] = std::move(s);
-    }
-
-    // --- Jailbreak ---
-    {
-        json b;
-        b["detected"] = r.jailbreak.detected;
-        b["indicators"] = r.jailbreak.indicators;
-        j["jailbreak"] = std::move(b);
     }
 
     return j.dump(2);
