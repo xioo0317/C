@@ -1,34 +1,29 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// main.cpp — HTTP network entry point ONLY.
+// main.cpp — HTTP network entry point ONLY ("the network card").
 //
-// This file only brings up the httplib server and wires POST / to the
-// detection handler. All detection logic lives in detector.cpp.
-// Version info is served at GET /version for frontend update checks.
+// This file only starts the httplib server and wires routes to router.cpp.
+// All business logic lives in tools.cpp, dispatched by router.cpp.
 
 #include <httplib.h>
 #include "version.hpp"
-#include "detector.hpp"
+#include "router.hpp"
 
 int main() {
     httplib::Server svr;
 
-    // POST / — run root detection (dispatched to detector.cpp)
-    svr.Post("/", [](const httplib::Request&, httplib::Response& res) {
-        res.set_content(ksu_detector::handle_detect(), "application/json");
-    });
+    // POST / — all requests go here; body {"action":"..."} selects the tool
+    svr.Post("/", router::handle_post);
 
-    // GET /version — frontend checks server version for updates
-    svr.Get("/version", [](const httplib::Request&, httplib::Response& res) {
-        res.set_content(local_api::get_version_info(), "application/json");
-    });
+    // GET /debug — tool info, versions, dry-run for debugging
+    svr.Get("/debug", router::handle_debug);
 
     // JSON 404 instead of any HTML/console noise.
     svr.set_error_handler([](const httplib::Request&, httplib::Response& res) {
         if (res.status == 404) {
             nlohmann::json err = {
                 {"error", "not found"},
-                {"hint", "POST / for detection, GET /version for version info"}
+                {"hint", "POST / with {\"action\":\"...\"}  |  GET /debug"}
             };
             res.set_content(err.dump(), "application/json");
         }

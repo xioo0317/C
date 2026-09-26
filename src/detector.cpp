@@ -3,10 +3,9 @@
 // detector.cpp — Manager-level detector implementation.
 //
 // Handshake-based detection for KernelSU, APatch, Magisk, and SusFS.
-// Also provides handle_detect() which runs detection and writes JSON to file.
+// This is a pure detection library — tools.cpp calls Detector::run_all().
 
 #include "detector.hpp"
-#include "version.hpp"
 #include "ksu_uapi.hpp"
 #include "apatch_uapi.hpp"
 #include "magisk_uapi.hpp"
@@ -20,7 +19,6 @@
 #include <cerrno>
 #include <string>
 #include <vector>
-#include <fstream>
 
 #include <unistd.h>
 #include <fcntl.h>
@@ -37,43 +35,6 @@
 namespace ksu_detector {
 
 using json = nlohmann::json;
-
-// ===========================================================================
-// handle_detect — entry point for HTTP POST /
-// ===========================================================================
-
-std::string handle_detect() {
-    Detector detector;
-    DetectResult result = detector.run_all();
-    const std::string body = result_to_json_string(result);
-
-    // Ensure output directory exists
-    mkdir(local_api::OUTPUT_DIR, 0755);
-
-    // Write result to file
-    std::ofstream out(local_api::OUTPUT_FILE, std::ios::trunc);
-    if (!out.is_open()) {
-        json reply = {
-            {"status", "error"},
-            {"error", "failed to write result file"}
-        };
-        return reply.dump();
-    }
-    out << body;
-    if (!out.good()) {
-        json reply = {
-            {"status", "error"},
-            {"error", "failed to write result file"}
-        };
-        return reply.dump();
-    }
-
-    json reply = {
-        {"status", "ok"},
-        {"result_file", local_api::OUTPUT_FILE}
-    };
-    return reply.dump();
-}
 
 // ===========================================================================
 // SIGSYS handler
@@ -407,31 +368,22 @@ std::string result_to_json_string(const DetectResult& r) {
     json j;
     j["detected"] = kernel_type_name(r.type);
 
-    // --- KernelSU ---
     {
         json k;
         k["present"] = r.ksu.present;
-        if (r.ksu.present) {
-            k["mode"] = r.ksu.mode_str;
-        }
+        if (r.ksu.present) k["mode"] = r.ksu.mode_str;
         j["kernelsu"] = std::move(k);
     }
-
-    // --- APatch ---
     {
         json a;
         a["present"] = r.ap.present;
         j["apatch"] = std::move(a);
     }
-
-    // --- Magisk ---
     {
         json m;
         m["present"] = r.magisk.present;
         j["magisk"] = std::move(m);
     }
-
-    // --- SusFS ---
     {
         json s;
         s["present"] = r.susfs.detected;
