@@ -9,7 +9,6 @@ set -euo pipefail
 HOST="${1:-127.0.0.1}"
 PORT="${2:-8080}"
 BASE_URL="http://${HOST}:${PORT}"
-DETECT_URL="${BASE_URL}/api/v1/detect"
 RESULT_FILE="/data/local/tmp/coverRoot/root_detect.json"
 
 PASS=0
@@ -33,28 +32,35 @@ echo "  Target: ${BASE_URL}"
 echo "==================================================="
 echo ""
 
-# ── POST /api/v1/detect ────────────────────────────────────
-echo "[1/4] POST /api/v1/detect"
-HTTP_CODE=$(curl -s -o /tmp/api_body -w "%{http_code}" -X POST "$DETECT_URL")
+# ── POST / (detect) ──────────────────────────────────────
+echo "[1/5] POST / (root detection)"
+HTTP_CODE=$(curl -s -o /tmp/api_body -w "%{http_code}" -X POST "$BASE_URL/")
 BODY=$(cat /tmp/api_body)
 check "HTTP 200" "$([ "${HTTP_CODE}" = "200" ] && echo 1 || echo 0)" "got ${HTTP_CODE}"
 check "contains status:ok" "$(echo "$BODY" | grep -q '"status":"ok"' && echo 1 || echo 0)"
 check "contains result_file" "$(echo "$BODY" | grep -q '"result_file"' && echo 1 || echo 0)"
 
-echo "[2/4] Result JSON file written"
+echo "[2/5] Result JSON file written"
 check "file exists: ${RESULT_FILE}" "$([ -f "$RESULT_FILE" ] && echo 1 || echo 0)"
 if [ -f "$RESULT_FILE" ]; then
     check "valid JSON" "$(python3 -c "import json,sys;json.load(open('${RESULT_FILE}'))" 2>/dev/null && echo 1 || echo 0)"
     check "has detected field" "$(grep -q '"detected"' "$RESULT_FILE" && echo 1 || echo 0)"
 fi
 
-# ── 404 path ───────────────────────────────────────────────
-echo "[3/4] Unknown path returns JSON 404"
+# ── GET /version ─────────────────────────────────────────
+echo "[3/5] GET /version"
+HTTP_CODE=$(curl -s -o /tmp/api_ver -w "%{http_code}" "$BASE_URL/version")
+VER_BODY=$(cat /tmp/api_ver)
+check "HTTP 200" "$([ "${HTTP_CODE}" = "200" ] && echo 1 || echo 0)" "got ${HTTP_CODE}"
+check "contains server_version" "$(echo "$VER_BODY" | grep -q '"server_version"' && echo 1 || echo 0)"
+
+# ── 404 path ────────────────────────────────────────────
+echo "[4/5] Unknown path returns JSON 404"
 HTTP_CODE=$(curl -s -o /tmp/api_body -w "%{http_code}" "${BASE_URL}/nope")
 check "HTTP 404" "$([ "${HTTP_CODE}" = "404" ] && echo 1 || echo 0)" "got ${HTTP_CODE}"
 check "JSON error body" "$(grep -q '"error"' /tmp/api_body && echo 1 || echo 0)"
 
-echo "[4/4] Server stays silent (no special terminal output to assert here)"
+echo "[5/5] Server stays silent (no special terminal output to assert here)"
 check "endpoint reachable" "$([ "${HTTP_CODE}" = "404" ] && echo 1 || echo 0)"
 
 echo ""
