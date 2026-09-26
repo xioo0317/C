@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Manager-level kernel root detector for KernelSU, APatch,
-// Magisk, and SusFS handshake verification.
+// detector.hpp — Manager-level kernel root detector.
 //
 // Only checks if each root manager is present via handshake.
 // For KernelSU, also reports the mode (e.g. "lkm-bundled").
+//
+// handle_detect() is the main entry point called from the HTTP layer.
 
 #pragma once
 
 #include <string>
 #include <cstdint>
-#include <signal.h>
 
 namespace ksu {
 struct get_info_cmd;
@@ -29,32 +29,22 @@ enum class KernelType {
     Mixed,
 };
 
-// --- KernelSU ---
-
 struct KsuResult {
     bool present = false;
     std::string mode_str;  // "lkm-bundled", "lkm", "built-in", "late-load", "legacy-prctl"
 };
 
-// --- APatch ---
-
 struct ApResult {
     bool present = false;
 };
-
-// --- Magisk ---
 
 struct MagiskResult {
     bool present = false;
 };
 
-// --- SusFS ---
-
 struct SusfsResult {
     bool detected = false;
 };
-
-// --- Top-level result ---
 
 struct DetectResult {
     KernelType type = KernelType::None;
@@ -64,32 +54,47 @@ struct DetectResult {
     SusfsResult susfs;
 };
 
+// --- Entry point for HTTP layer ---
+
+// Run full detection, write JSON result to file.
+// Returns HTTP response JSON string.
+std::string handle_detect();
+
 // Serialize a DetectResult to a pretty-printed JSON string.
 std::string result_to_json_string(const DetectResult& r);
+
+// --- Detector class ---
 
 class Detector {
 public:
     Detector();
     ~Detector();
-    void enable_sigsys_handler(bool enable);
     DetectResult run_all();
+
+private:
     KsuResult probe_ksu();
     ApResult  probe_apatch();
     MagiskResult probe_magisk();
     SusfsResult probe_susfs();
 
-private:
+    // SIGSYS handler for catching unsupported syscalls
     bool sigsys_installed_ = false;
     static volatile bool g_sigsys_hit_;
     static void sigsys_handler(int sig, siginfo_t* si, void* ctx);
     void install_sigsys();
     void uninstall_sigsys();
+
+    // KernelSU helpers
     int ksu_install_fd();
     bool ksu_do_get_info(int fd, ksu::get_info_cmd& info);
+
+    // APatch helpers
     long ap_raw_call(const char* key, uint16_t cmd,
                      long arg3 = 0, long arg4 = 0,
                      long arg5 = 0, long arg6 = 0);
     bool ap_hello(const char* key);
+
+    // Magisk helpers
     bool magisk_find_socket(std::string& out_path);
     bool magisk_probe_daemon(const std::string& socket_path,
                              uint32_t& out_version_code,

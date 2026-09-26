@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Manager-level detector implementation for KernelSU, APatch,
-// Magisk, and SusFS handshake verification.
+// detector.cpp — Manager-level detector implementation.
 //
-// Only checks: is the root manager present? For KernelSU, also
-// reports the mode (e.g. "lkm-bundled").
+// Handshake-based detection for KernelSU, APatch, Magisk, and SusFS.
+// Also provides handle_detect() which runs detection and writes JSON to file.
 
 #include "detector.hpp"
+#include "version.hpp"
 #include "ksu_uapi.hpp"
 #include "apatch_uapi.hpp"
 #include "magisk_uapi.hpp"
@@ -20,6 +20,7 @@
 #include <cerrno>
 #include <string>
 #include <vector>
+#include <fstream>
 
 #include <unistd.h>
 #include <fcntl.h>
@@ -34,6 +35,49 @@
 #include <sys/socket.h>
 
 namespace ksu_detector {
+
+using json = nlohmann::json;
+
+// ===========================================================================
+// handle_detect — entry point for HTTP POST /
+// ===========================================================================
+
+std::string handle_detect() {
+    Detector detector;
+    DetectResult result = detector.run_all();
+    const std::string body = result_to_json_string(result);
+
+    // Ensure output directory exists
+    mkdir(local_api::OUTPUT_DIR, 0755);
+
+    // Write result to file
+    std::ofstream out(local_api::OUTPUT_FILE, std::ios::trunc);
+    if (!out.is_open()) {
+        json reply = {
+            {"status", "error"},
+            {"error", "failed to write result file"}
+        };
+        return reply.dump();
+    }
+    out << body;
+    if (!out.good()) {
+        json reply = {
+            {"status", "error"},
+            {"error", "failed to write result file"}
+        };
+        return reply.dump();
+    }
+
+    json reply = {
+        {"status", "ok"},
+        {"result_file", local_api::OUTPUT_FILE}
+    };
+    return reply.dump();
+}
+
+// ===========================================================================
+// SIGSYS handler
+// ===========================================================================
 
 volatile bool Detector::g_sigsys_hit_ = false;
 
@@ -76,11 +120,6 @@ void Detector::uninstall_sigsys() {
 Detector::Detector() = default;
 Detector::~Detector() {
     if (sigsys_installed_) uninstall_sigsys();
-}
-
-void Detector::enable_sigsys_handler(bool enable) {
-    if (enable) install_sigsys();
-    else uninstall_sigsys();
 }
 
 // ===========================================================================
@@ -321,6 +360,10 @@ SusfsResult Detector::probe_susfs() {
     return result;
 }
 
+// ===========================================================================
+// run_all
+// ===========================================================================
+
 DetectResult Detector::run_all() {
     DetectResult result;
     result.ksu = probe_ksu();
@@ -343,8 +386,6 @@ DetectResult Detector::run_all() {
 // ===========================================================================
 // JSON serialization
 // ===========================================================================
-
-using json = nlohmann::json;
 
 namespace {
 
