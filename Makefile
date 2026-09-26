@@ -1,15 +1,8 @@
-# Makefile for local_api (with ksu-detect integrated)
+# Makefile for local_api
 #
-# Host build (for testing on Linux desktop):
-#   make
-#
-# Android NDK cross-compile:
-#   make NDK_HOME=/path/to/ndk
-#   make NDK_HOME=/path/to/ndk ABI=armeabi-v7a
-#   make all-abis NDK_HOME=/path/to/ndk
-#
-# Clean:
-#   make clean
+# Host build:    make
+# Android NDK:   make NDK_HOME=/path/to/ndk
+# Clean:         make clean
 
 CXX      ?= g++
 NDK_HOME ?= $(ANDROID_NDK_HOME)
@@ -25,7 +18,6 @@ else
     HOST_TAG := windows-x86_64
 endif
 
-# NDK toolchain
 TOOLCHAIN := $(NDK_HOME)/toolchains/llvm/prebuilt/$(HOST_TAG)
 ifeq ($(ABI),arm64-v8a)
     TARGET  := aarch64-linux-android
@@ -48,7 +40,11 @@ SRC_DIR  := src
 BUILD    := build
 TARGET_NAME := local_api
 
-SRCS     := $(SRC_DIR)/main.cpp $(SRC_DIR)/detector.cpp
+# All source files
+SRCS     := $(SRC_DIR)/main.cpp \
+            $(SRC_DIR)/router.cpp \
+            $(SRC_DIR)/tools.cpp \
+            $(SRC_DIR)/detector.cpp
 
 ABIS     := arm64-v8a armeabi-v7a x86_64
 
@@ -58,12 +54,10 @@ LDFLAGS  := -llog -pthread
 
 .PHONY: all ndk all-abis clean check-ndk
 
-# Default: host build
 all:
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) -o $(BUILD)/$(TARGET_NAME) $(SRCS) $(HOST_LDFLAGS)
 
-# Android NDK cross-compile
 ndk: check-ndk
 	@mkdir -p $(BUILD)
 	$(NDK_CXX) $(CXXFLAGS) -fPIE -pie -o $(BUILD)/$(TARGET_NAME)_$(ABI) $(SRCS) $(LDFLAGS)

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test_api.sh - API test suite for local_api (root detection)
+# test_api.sh - API test suite for local_api
 #
 # Usage: ./test_api.sh [host] [port]
 # Default: host=127.0.0.1, port=8080
@@ -27,41 +27,49 @@ check() {
 }
 
 echo "==================================================="
-echo "  local_api Root-Detection Test Suite"
+echo "  local_api Test Suite"
 echo "  Target: ${BASE_URL}"
 echo "==================================================="
 echo ""
 
-# ── POST / (detect) ──────────────────────────────────────
-echo "[1/5] POST / (root detection)"
-HTTP_CODE=$(curl -s -o /tmp/api_body -w "%{http_code}" -X POST "$BASE_URL/")
+# ── 1. POST / action=detect ──────────────────────────────
+echo "[1/5] POST / action=detect"
+HTTP_CODE=$(curl -s -o /tmp/api_body -w "%{http_code}" -X POST -H "Content-Type: application/json" -d '{"action":"detect"}' "$BASE_URL/")
 BODY=$(cat /tmp/api_body)
 check "HTTP 200" "$([ "${HTTP_CODE}" = "200" ] && echo 1 || echo 0)" "got ${HTTP_CODE}"
-check "contains status:ok" "$(echo "$BODY" | grep -q '"status":"ok"' && echo 1 || echo 0)"
-check "contains result_file" "$(echo "$BODY" | grep -q '"result_file"' && echo 1 || echo 0)"
+check "status ok" "$(echo "$BODY" | grep -q '"status":"ok"' && echo 1 || echo 0)"
+check "has result" "$(echo "$BODY" | grep -q '"result"' && echo 1 || echo 0)"
+check "has detected" "$(echo "$BODY" | grep -q '"detected"' && echo 1 || echo 0)"
 
-echo "[2/5] Result JSON file written"
-check "file exists: ${RESULT_FILE}" "$([ -f "$RESULT_FILE" ] && echo 1 || echo 0)"
-if [ -f "$RESULT_FILE" ]; then
-    check "valid JSON" "$(python3 -c "import json,sys;json.load(open('${RESULT_FILE}'))" 2>/dev/null && echo 1 || echo 0)"
-    check "has detected field" "$(grep -q '"detected"' "$RESULT_FILE" && echo 1 || echo 0)"
-fi
-
-# ── GET /version ─────────────────────────────────────────
-echo "[3/5] GET /version"
-HTTP_CODE=$(curl -s -o /tmp/api_ver -w "%{http_code}" "$BASE_URL/version")
-VER_BODY=$(cat /tmp/api_ver)
+# ── 2. POST / action=version ──────────────────────────────
+echo "[2/5] POST / action=version"
+HTTP_CODE=$(curl -s -o /tmp/api_body -w "%{http_code}" -X POST -H "Content-Type: application/json" -d '{"action":"version"}' "$BASE_URL/")
+BODY=$(cat /tmp/api_body)
 check "HTTP 200" "$([ "${HTTP_CODE}" = "200" ] && echo 1 || echo 0)" "got ${HTTP_CODE}"
-check "contains server_version" "$(echo "$VER_BODY" | grep -q '"server_version"' && echo 1 || echo 0)"
+check "has server_version" "$(echo "$BODY" | grep -q '"server_version"' && echo 1 || echo 0)"
 
-# ── 404 path ────────────────────────────────────────────
-echo "[4/5] Unknown path returns JSON 404"
-HTTP_CODE=$(curl -s -o /tmp/api_body -w "%{http_code}" "${BASE_URL}/nope")
-check "HTTP 404" "$([ "${HTTP_CODE}" = "404" ] && echo 1 || echo 0)" "got ${HTTP_CODE}"
-check "JSON error body" "$(grep -q '"error"' /tmp/api_body && echo 1 || echo 0)"
+# ── 3. POST / action=debug ──────────────────────────────
+echo "[3/5] POST / action=debug"
+HTTP_CODE=$(curl -s -o /tmp/api_body -w "%{http_code}" -X POST -H "Content-Type: application/json" -d '{"action":"debug"}' "$BASE_URL/")
+BODY=$(cat /tmp/api_body)
+check "HTTP 200" "$([ "${HTTP_CODE}" = "200" ] && echo 1 || echo 0)" "got ${HTTP_CODE}"
+check "has tools" "$(echo "$BODY" | grep -q '"tools"' && echo 1 || echo 0)"
+check "has detect_dry_run" "$(echo "$BODY" | grep -q '"detect_dry_run"' && echo 1 || echo 0)"
 
-echo "[5/5] Server stays silent (no special terminal output to assert here)"
-check "endpoint reachable" "$([ "${HTTP_CODE}" = "404" ] && echo 1 || echo 0)"
+# ── 4. GET /debug ────────────────────────────────────────
+echo "[4/5] GET /debug"
+HTTP_CODE=$(curl -s -o /tmp/api_body -w "%{http_code}" "$BASE_URL/debug")
+BODY=$(cat /tmp/api_body)
+check "HTTP 200" "$([ "${HTTP_CODE}" = "200" ] && echo 1 || echo 0)" "got ${HTTP_CODE}"
+check "has tool_status" "$(echo "$BODY" | grep -q '"tool_status"' && echo 1 || echo 0)"
+
+# ── 5. Unknown action ───────────────────────────────────
+echo "[5/5] POST / unknown action"
+HTTP_CODE=$(curl -s -o /tmp/api_body -w "%{http_code}" -X POST -H "Content-Type: application/json" -d '{"action":"nope"}' "$BASE_URL/")
+BODY=$(cat /tmp/api_body)
+check "HTTP 200" "$([ "${HTTP_CODE}" = "200" ] && echo 1 || echo 0)" "got ${HTTP_CODE}"
+check "error response" "$(echo "$BODY" | grep -q '"error"' && echo 1 || echo 0)"
+check "lists available_actions" "$(echo "$BODY" | grep -q '"available_actions"' && echo 1 || echo 0)"
 
 echo ""
 echo "==================================================="

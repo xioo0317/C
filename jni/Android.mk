@@ -5,16 +5,17 @@ include $(CLEAR_VARS)
 
 LOCAL_MODULE := local_api
 
-# Only two translation units:
-#   main.cpp     — HTTP network interface + routes
-#   detector.cpp — KernelSU / APatch / Magisk / SusFS detection + JSON
+# Source files:
+#   main.cpp     — HTTP network card (server bind only)
+#   router.cpp   — request dispatch by action field
+#   tools.cpp    — tool functions (detect, version, debug, etc.)
+#   detector.cpp — KernelSU / APatch / Magisk / SusFS handshake detection
 LOCAL_SRC_FILES := \
     ../src/main.cpp \
+    ../src/router.cpp \
+    ../src/tools.cpp \
     ../src/detector.cpp
 
-# include/  holds the UAPI headers + detector.hpp;
-# third_party/ holds httplib.h and nlohmann/json.hpp (so that
-# "#include <nlohmann/json.hpp>" resolves).
 LOCAL_C_INCLUDES := \
     $(LOCAL_PATH)/../include \
     $(LOCAL_PATH)/../third_party

@@ -1,15 +1,18 @@
 # Local API
 
-C++17 本地 HTTP 服务，集成 Root 检测能力（KernelSU / APatch / Magisk / SusFS），基于 [cpp-httplib](https://github.com/yhirose/cpp-httplib) 构建。
+C++17 本地 HTTP 服务，基于请求体 action 字段分发工具调用，集成 Root 检测（KernelSU / APatch / Magisk / SusFS）。
 
-## 功能概述
+## 架构
 
-- **网卡与检测分离**：`main.cpp` 只负责启动 HTTP 服务和路由分发；所有业务逻辑在 `detector.cpp`
-- **极简路由**：`POST /` — 执行 Root 检测；`GET /version` — 前端检查版本更新
-- **无路径依赖**：客户端只需 POST 到本地地址即可，无需拼接路径
-- **落盘而非打印**：服务全程不向终端输出任何内容；检测结果以 JSON 写入 `/data/local/tmp/coverRoot/root_detect.json`
-- **真实握手协议**：复刻各官方管理器的内核握手，而非简单文件探测
-- **版本管理**：前端 UI 可通过 `GET /version` 检查服务器版本，判断是否需要更新
+```
+main.cpp      → HTTP 网卡（只启动服务、绑定路由）
+router.cpp    → 请求分发（解析 action，路由到对应工具函数）
+tools.cpp     → 工具函数集合（detect / version / debug / 占位工具）
+detector.cpp  → 纯检测库（KSU / APatch / Magisk / SusFS 握手）
+version.hpp   → 版本号 + 配置常量
+```
+
+客户端只需 `POST /`，请求体 `{"action": "..."}` 决定调用哪个工具。
 
 ## 项目结构
 
@@ -17,176 +20,126 @@ C++17 本地 HTTP 服务，集成 Root 检测能力（KernelSU / APatch / Magisk
 ./
 ├── Makefile                     # 主机 + NDK 构建脚本
 ├── src/
-│   ├── main.cpp                 # 仅 HTTP 网卡 + 路由分发
-│   └── detector.cpp             # 检测逻辑 + 文件写入 + 响应构建
+│   ├── main.cpp                 # 仅 HTTP 网卡（服务绑定）
+│   ├── router.cpp               # 请求分发（action → tool）
+│   ├── tools.cpp                # 工具函数集合
+│   └── detector.cpp             # 纯检测库
 ├── include/
-│   ├── version.hpp              # 版本号 + 配置常量 + 版本信息接口
-│   ├── detector.hpp             # DetectResult / Detector / handle_detect 声明
+│   ├── version.hpp              # 版本号 + 配置
+│   ├── router.hpp               # 路由分发接口
+│   ├── tools.hpp                # 工具函数注册表
+│   ├── detector.hpp             # 检测库接口
 │   ├── ksu_uapi.hpp             # KernelSU 用户态 API
-│   ├── apatch_uapi.hpp          # APatch / KernelPatch supercall
+│   ├── apatch_uapi.hpp          # APatch supercall
 │   ├── magisk_uapi.hpp          # Magisk daemon 协议
-│   └── susfs_uapi.hpp           # SusFS 内核握手 ABI
+│   └── susfs_uapi.hpp           # SusFS 握手 ABI
 ├── third_party/
-│   ├── httplib.h                # cpp-httplib 单头库
-│   └── nlohmann/json.hpp        # nlohmann/json 单头库
-├── jni/
-│   ├── Android.mk               # ndk-build 脚本
-│   └── Application.mk           # arm64-v8a / c++_static / android-24
-├── test_api.sh                  # API 测试脚本
+│   ├── httplib.h                # cpp-httplib
+│   └── nlohmann/json.hpp        # nlohmann/json
+├── jni/                         # NDK 构建配置
+├── test_api.sh                  # 测试脚本
 └── README.md
 ```
 
-## 版本管理
+## API
 
-版本号定义在 `include/version.hpp`：
+### POST / — 所有请求入口
 
-| 常量 | 当前值 | 说明 |
-|------|--------|------|
-| `SERVER_VERSION` | `1.1.0` | 服务器版本，发版时递增 |
-| `API_VERSION` | `2.0` | API 协议版本，接口格式变更时递增 |
+请求体 JSON，`action` 字段决定调用哪个工具：
 
-前端 UI 调用 `GET /version` 获取版本号，与服务端对比判断是否需要更新。
+#### action: detect — Root 检测
+
+```bash
+curl -X POST http://localhost:8080/ -H "Content-Type: application/json" -d '{"action":"detect"}'
+```
+
+```json
+{
+  "status": "ok",
+  "result_file": "/data/local/tmp/coverRoot/root_detect.json",
+  "result": {
+    "detected": "kernelsu",
+    "kernelsu": {"present": true, "mode": "lkm-bundled"},
+    "apatch": {"present": false},
+    "magisk": {"present": false},
+    "susfs": {"present": true}
+  }
+}
+```
+
+#### action: version — 版本信息
+
+```bash
+curl -X POST http://localhost:8080/ -d '{"action":"version"}'
+```
+
+```json
+{"status":"ok","server_version":"1.1.0","api_version":"2.0","app_name":"Local-api"}
+```
+
+#### action: debug — 调试信息 + 工具试运行
+
+```bash
+curl -X POST http://localhost:8080/ -d '{"action":"debug"}'
+```
+
+返回所有工具列表、版本、状态、以及检测试运行结果。
+
+### GET /debug — 调试端点
+
+等同 `action: debug`，方便浏览器直接访问：
+
+```bash
+curl http://localhost:8080/debug
+```
+
+### 已注册工具
+
+| action | 状态 | 说明 |
+|--------|------|------|
+| `detect` | ✅ 已实现 | Root 检测（KSU/APatch/Magisk/SusFS 握手） |
+| `version` | ✅ 已实现 | 服务器版本 + API 版本 |
+| `debug` | ✅ 已实现 | 工具信息 + 检测试运行 + 环境信息 |
+| `sysinfo` | 🔲 占位 | 系统信息（设备型号、Android 版本、内核等） |
+| `modules` | 🔲 占位 | 模块管理（列表、启用/禁用） |
+| `config` | 🔲 占位 | 配置读写 |
+
+### 未知 action
+
+```json
+{"status":"error","error":"unknown action: xxx","available_actions":["detect","version","debug","sysinfo","modules","config"]}
+```
 
 ## 构建
 
-### 主机编译（Linux 桌面测试）
-
 ```bash
+# 主机编译
 make
-# 产出: build/local_api
-```
 
-### Android NDK（ndk-build，与 CI 一致）
-
-```bash
-$NDK/ndk-build NDK_PROJECT_PATH=. \
-  APP_BUILD_SCRIPT=jni/Android.mk \
-  NDK_APPLICATION_MK=jni/Application.mk
-# 产出: libs/arm64-v8a/local_api
-```
-
-也可以用 Makefile 交叉编译：
-
-```bash
+# Android NDK
 make ndk NDK_HOME=/path/to/ndk
-```
 
-### 清理
-
-```bash
+# 清理
 make clean
 ```
 
 ## 运行
 
 ```bash
-# Android
-adb push libs/arm64-v8a/local_api /data/local/tmp/local_api
+adb push build/local_api_arm64-v8a /data/local/tmp/local_api
 adb shell chmod +x /data/local/tmp/local_api
 adb shell /data/local/tmp/local_api
 ```
 
-服务默认监听 `0.0.0.0:8080`，启动后静默运行。
+## 版本管理
 
-## API
+| 常量 | 当前值 | 说明 |
+|------|--------|------|
+| `SERVER_VERSION` | `1.1.0` | 发版递增 |
+| `API_VERSION` | `2.0` | 接口格式变更递增 |
 
-### POST / — 执行 Root 检测
-
-无需请求体，客户端直接 POST 到本地地址即可：
-
-```bash
-curl -X POST http://localhost:8080/
-```
-
-HTTP 响应：
-
-```json
-{
-  "status": "ok",
-  "result_file": "/data/local/tmp/coverRoot/root_detect.json"
-}
-```
-
-### GET /version — 版本信息
-
-前端 UI 用于检查服务端版本，判断是否需要更新：
-
-```bash
-curl http://localhost:8080/version
-```
-
-响应：
-
-```json
-{
-  "server_version": "1.1.0",
-  "api_version": "2.0",
-  "app_name": "Local-api"
-}
-```
-
-### 检测结果文件（root_detect.json）
-
-```json
-{
-  "detected": "kernelsu",
-  "kernelsu": {
-    "present": true,
-    "mode": "lkm-bundled"
-  },
-  "apatch": {
-    "present": false
-  },
-  "magisk": {
-    "present": false
-  },
-  "susfs": {
-    "present": true
-  }
-}
-```
-
-### 字段说明
-
-| 字段 | 说明 |
-|------|------|
-| `detected` | 主 Root 方案：`none` / `kernelsu` / `kernelpatch` / `magisk` / `mixed` |
-| `kernelsu.present` | KernelSU 是否正在运行 |
-| `kernelsu.mode` | 运行模式：`lkm-bundled` / `lkm` / `built-in` / `late-load` / `legacy-prctl` |
-| `apatch.present` | APatch 是否正在运行 |
-| `magisk.present` | Magisk 守护进程是否正在运行 |
-| `susfs.present` | SusFS 内核接口是否握手成功 |
-
-### 脚本读取示例
-
-```bash
-# 触发检测
-curl -s -X POST http://localhost:8080/
-
-# 从落盘文件读取当前 Root 方案
-jq -r '.detected' /data/local/tmp/coverRoot/root_detect.json
-
-# 检查 KernelSU 模式
-jq -r '.kernelsu.mode' /data/local/tmp/coverRoot/root_detect.json
-
-# 检查服务端版本
-curl -s http://localhost:8080/version | jq -r '.server_version'
-```
-
-## 测试
-
-```bash
-./test_api.sh
-./test_api.sh 192.168.1.100 8080
-```
-
-## 技术说明
-
-- **KernelSU 检测**：reboot syscall hook 取得驱动 fd，ioctl `GET_INFO` 获取运行模式
-- **APatch 检测**：supercall 用固定 key `su` 发 `SUPERCALL_HELLO`，回报 magic 即存在
-- **Magisk 检测**：Unix domain socket 与 magiskd 握手
-- **SusFS 检测**：两阶段握手——reboot 识别 v2.0.0+，prctl 识别 v1.5.3–v1.5.12
+前端调用 `{"action":"version"}` 检查是否需要更新。
 
 ## 许可证
 
-本项目集成代码遵循 GPL-3.0-or-later 许可证。
+GPL-3.0-or-later
